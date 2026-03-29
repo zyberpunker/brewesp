@@ -143,6 +143,41 @@ Reason:
 - that matches fermentation use best
 - chamber probe works better as a limiting signal than as the main target
 
+Chosen implementation direction:
+
+- `beer probe` = primary control sensor
+- `chamber probe` = secondary diagnostics and limiting sensor
+- both DS18B20 probes should be supported from the first hardware revision
+- the chamber probe must be optional and explicitly enable-able in config
+
+### Two-probe control strategy
+
+Recommended BrewESP behavior:
+
+- always steer the fermentation process by `beer probe` temperature
+- treat the `chamber probe` as optional
+- when enabled, use the chamber probe to limit how far the chamber is allowed to
+  swing away from the active setpoint
+- use the chamber probe for diagnostics, charts, and alarms even if its limiting
+  behavior is disabled
+
+Suggested first control rules:
+
+1. If the beer probe is missing or stale:
+   - stop heating
+   - stop cooling
+   - enter fault state
+2. If the chamber probe is disabled or absent:
+   - continue with normal one-probe control using only beer temperature
+3. If the chamber probe is enabled:
+   - allow heating and cooling demand to be created from beer temperature
+   - block cooling if chamber temperature has already fallen too far below the
+     setpoint
+   - block heating if chamber temperature has already risen too far above the
+     setpoint
+4. Chamber limiting should not replace the beer probe as the main control
+   variable.
+
 ### Sensor safety
 
 If the primary sensor is missing or invalid:

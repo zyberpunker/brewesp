@@ -12,7 +12,7 @@ Recommended first implementation choices:
 - Web backend: FastAPI
 - Web UI: server-rendered HTML templates + light JavaScript for charts/forms
 - Database: TimescaleDB on PostgreSQL
-- Local panel: external I2C OLED + 4 physical buttons
+- Local panel: `AZ-Touch MOD` touchscreen panel + optional hidden service button
 
 Reasoning:
 
@@ -66,6 +66,7 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 - read DS18B20 probes
 - apply calibration offsets
 - detect invalid or stale readings
+- identify probe addresses and map them to `beer` and `chamber`
 
 ### `config_manager`
 
@@ -86,9 +87,9 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 
 ### `local_ui`
 
-- render OLED home and diagnostics screens
-- handle four-button navigation
-- manage display dim/off timers and wake behavior
+- render touchscreen home, manual, and diagnostics screens
+- handle touch input and simple page navigation
+- manage TFT backlight dim/off timers and wake behavior
 - publish local override changes into device state
 - remain fully optional so the controller can run headless
 
@@ -226,7 +227,7 @@ Behavior:
 
 - start a recovery AP
 - expose local onboarding page/API
-- accept Wi-Fi, MQTT, display, and output-backend settings
+- accept Wi-Fi, MQTT, display, touch, and output-backend settings
 - persist `system_config`
 - reboot into `normal`
 
@@ -255,6 +256,7 @@ Recommended local setup fields:
 - Wi-Fi SSID and password
 - MQTT host, port, auth, topic prefix
 - display driver and I2C address
+- AZ-Touch display driver and touch settings when local UI is enabled
 - heating output backend
 - cooling output backend
 - Shelly connection details when applicable
@@ -338,9 +340,11 @@ Rarely changed installation/configuration data:
 - heartbeat intervals
 - time zone
 - whether local UI is enabled
+- local UI interaction model
 - output backend type for heating/cooling
 - GPIO pin mapping if `gpio` is used
-- button mapping if local buttons are used
+- OneWire sensor bus pin and sensor role mapping
+- optional service button mapping if local recovery button is used
 - display driver and display sleep settings if local display is used
 - Shelly endpoint/auth/device mapping if `shelly_http_rpc` is used
 
@@ -355,6 +359,10 @@ Frequently changed process data:
 - thermostat setpoint
 - hysteresis
 - delays
+- primary and secondary sensor offsets
+- whether the secondary chamber probe is enabled
+- which sensor is considered the control sensor
+- chamber limit hysteresis
 - profile steps
 - ramping
 - alarm thresholds

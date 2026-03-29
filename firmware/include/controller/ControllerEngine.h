@@ -42,8 +42,11 @@ public:
 private:
     bool setState(State nextState, const String& reason);
     uint32_t remainingSeconds(uint32_t lockedUntilMs, uint32_t nowMs) const;
+    void updateSecondaryLimits(const FermentationConfig& config, const Inputs& inputs);
 
     Status status_;
     uint32_t heatingLockedUntilMs_ = 0;
     uint32_t coolingLockedUntilMs_ = 0;
+    bool heatingLimitedBySecondary_ = false;
+    bool coolingLimitedBySecondary_ = false;
 };

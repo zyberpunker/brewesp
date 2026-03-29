@@ -9,6 +9,14 @@ struct ThermostatConfig {
     uint16_t heatingDelaySeconds = 120;
 };
 
+struct SensorControlConfig {
+    float primaryOffsetC = 0.0f;
+    bool secondaryEnabled = false;
+    float secondaryOffsetC = 0.0f;
+    float secondaryLimitHysteresisC = 1.5f;
+    String controlSensor = "primary";
+};
+
 struct FermentationConfig {
     uint32_t schemaVersion = 1;
     uint32_t version = 1;
@@ -16,4 +24,5 @@ struct FermentationConfig {
     String name = "Default fermentation";
     String mode = "thermostat";
     ThermostatConfig thermostat;
+    SensorControlConfig sensors;
 };

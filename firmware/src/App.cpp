@@ -26,6 +26,7 @@ void App::begin() {
 
     localUi_.begin(config_);
     outputs_.begin(config_);
+    sensors_.begin(config_);
     controller_.reset();
 
     if (config_.wifi.ssid.isEmpty()) {
@@ -50,6 +51,7 @@ void App::update() {
     ensureWifiConnected();
     localUi_.update();
     outputs_.update();
+    sensors_.update(config_);
     if (controller_.update(fermentationConfig_, buildControllerInputs(), outputs_)) {
         mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     }
@@ -79,10 +81,12 @@ void App::beginNormalMode() {
 }
 
 void App::handleSystemConfig(const SystemConfig& updatedConfig) {
+    config_.sensors = updatedConfig.sensors;
     config_.heatingOutput = updatedConfig.heatingOutput;
     config_.coolingOutput = updatedConfig.coolingOutput;
     config_.heartbeat = updatedConfig.heartbeat;
     configStore_.save(config_);
+    sensors_.begin(config_);
     outputs_.applyConfig(config_);
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     Serial.println("[app] applied system_config from MQTT");
@@ -144,6 +148,8 @@ void App::handleOutputCommand(const String& target, OutputState state) {
 MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     MqttManager::TelemetrySnapshot telemetry;
     const ControllerEngine::Status& controllerStatus = controller_.status();
+    const SensorManager::Reading& beerProbe = sensors_.beerProbe();
+    const SensorManager::Reading& chamberProbe = sensors_.chamberProbe();
     telemetry.hasSetpoint = true;
     telemetry.setpointC = fermentationConfig_.thermostat.setpointC;
     telemetry.hysteresisC = fermentationConfig_.thermostat.hysteresisC;
@@ -153,12 +159,48 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     telemetry.controllerState = ControllerEngine::stateName(controllerStatus.state);
     telemetry.controllerReason = controllerStatus.reason;
     telemetry.automaticControlActive = controllerStatus.automaticControlActive;
+    telemetry.secondarySensorEnabled = fermentationConfig_.sensors.secondaryEnabled;
+    telemetry.controlSensor = fermentationConfig_.sensors.controlSensor;
+    if (beerProbe.valid) {
+        telemetry.hasPrimaryTemp = true;
+        telemetry.primaryTempC = beerProbe.tempC + fermentationConfig_.sensors.primaryOffsetC;
+    }
+    telemetry.beerProbePresent = beerProbe.present;
+    telemetry.beerProbeValid = beerProbe.valid;
+    if (beerProbe.present) {
+        telemetry.beerProbeRom = sensors_.beerProbeRom();
+    }
+    if (chamberProbe.valid) {
+        telemetry.hasSecondaryTemp = true;
+        telemetry.secondaryTempC = chamberProbe.tempC + fermentationConfig_.sensors.secondaryOffsetC;
+    }
+    telemetry.chamberProbePresent = chamberProbe.present;
+    telemetry.chamberProbeValid = chamberProbe.valid;
+    if (chamberProbe.present) {
+        telemetry.chamberProbeRom = sensors_.chamberProbeRom();
+    }
     return telemetry;
 }
 
 ControllerEngine::Inputs App::buildControllerInputs() const {
     ControllerEngine::Inputs inputs;
+    const SensorManager::Reading& beerProbe = sensors_.beerProbe();
+    const SensorManager::Reading& chamberProbe = sensors_.chamberProbe();
     inputs.nowMs = millis();
+    const bool useSecondaryAsControl =
+        fermentationConfig_.sensors.secondaryEnabled && fermentationConfig_.sensors.controlSensor == "secondary";
+
+    if (useSecondaryAsControl) {
+        inputs.hasPrimaryTemp = chamberProbe.valid;
+        inputs.primaryTempC = chamberProbe.tempC + fermentationConfig_.sensors.secondaryOffsetC;
+        inputs.hasSecondaryTemp = beerProbe.valid;
+        inputs.secondaryTempC = beerProbe.tempC + fermentationConfig_.sensors.primaryOffsetC;
+    } else {
+        inputs.hasPrimaryTemp = beerProbe.valid;
+        inputs.primaryTempC = beerProbe.tempC + fermentationConfig_.sensors.primaryOffsetC;
+        inputs.hasSecondaryTemp = chamberProbe.valid;
+        inputs.secondaryTempC = chamberProbe.tempC + fermentationConfig_.sensors.secondaryOffsetC;
+    }
     return inputs;
 }
 
@@ -171,6 +213,11 @@ FermentationConfig App::buildDefaultFermentationConfig(const String& deviceId) c
     config.thermostat.hysteresisC = 0.3f;
     config.thermostat.coolingDelaySeconds = 300;
     config.thermostat.heatingDelaySeconds = 120;
+    config.sensors.primaryOffsetC = 0.0f;
+    config.sensors.secondaryEnabled = false;
+    config.sensors.secondaryOffsetC = 0.0f;
+    config.sensors.secondaryLimitHysteresisC = 1.5f;
+    config.sensors.controlSensor = "primary";
     return config;
 }
 
@@ -227,6 +274,8 @@ SystemConfig App::buildDefaultConfig() const {
     config.mqtt.clientId = config.deviceId;
     config.mqtt.topicPrefix = "brewesp";
     config.heartbeat.intervalSeconds = 60;
+    config.sensors.oneWireGpio = 32;
+    config.sensors.pollIntervalSeconds = 5;
 
     config.localUi.enabled = false;
     config.localUi.headlessAllowed = true;

@@ -122,6 +122,14 @@ def _device_live_payload(device: Device, now: datetime) -> dict:
         "controller_state": last_payload.get("controller_state"),
         "controller_reason": last_payload.get("controller_reason"),
         "automatic_control_active": last_payload.get("automatic_control_active"),
+        "beer_probe_present": last_payload.get("beer_probe_present"),
+        "beer_probe_valid": last_payload.get("beer_probe_valid"),
+        "beer_probe_rom": last_payload.get("beer_probe_rom"),
+        "chamber_probe_present": last_payload.get("chamber_probe_present"),
+        "chamber_probe_valid": last_payload.get("chamber_probe_valid"),
+        "chamber_probe_rom": last_payload.get("chamber_probe_rom"),
+        "secondary_sensor_enabled": last_payload.get("secondary_sensor_enabled"),
+        "control_sensor": last_payload.get("control_sensor"),
         "fermentation_config": {
             "desired_version": fermentation_config.desired_version if fermentation_config else None,
             "last_applied_version": fermentation_config.last_applied_version if fermentation_config else None,
@@ -178,9 +186,13 @@ def _build_fermentation_config_payload(device: Device, config: DeviceFermentatio
             "heating_delay_s": config.heating_delay_s,
         },
         "sensors": {
-            "primary_offset_c": 0.0,
-            "secondary_enabled": False,
-            "control_sensor": "primary",
+            "primary_offset_c": config.primary_offset_c,
+            "secondary_enabled": config.secondary_enabled,
+            "secondary_offset_c": config.secondary_offset_c if config.secondary_enabled else 0.0,
+            "secondary_limit_hysteresis_c": (
+                config.secondary_limit_hysteresis_c if config.secondary_enabled else 1.5
+            ),
+            "control_sensor": config.control_sensor,
         },
         "alarms": {
             "deviation_c": 2.0,
@@ -416,6 +428,18 @@ async def update_fermentation(request: Request, device_id: str):
         config.hysteresis_c = float(form.get("hysteresis_c", config.hysteresis_c))
         config.cooling_delay_s = int(form.get("cooling_delay_s", config.cooling_delay_s))
         config.heating_delay_s = int(form.get("heating_delay_s", config.heating_delay_s))
+        config.primary_offset_c = float(form.get("primary_offset_c", config.primary_offset_c))
+        config.secondary_enabled = form.get("secondary_enabled") == "on"
+        config.control_sensor = str(form.get("control_sensor", "primary")).strip() or "primary"
+        if config.secondary_enabled:
+            config.secondary_offset_c = float(form.get("secondary_offset_c", config.secondary_offset_c or 0.0))
+            config.secondary_limit_hysteresis_c = float(
+                form.get("secondary_limit_hysteresis_c", config.secondary_limit_hysteresis_c or 1.5)
+            )
+        else:
+            config.secondary_offset_c = None
+            config.secondary_limit_hysteresis_c = None
+            config.control_sensor = "primary"
 
         payload = _build_fermentation_config_payload(device, config)
         session.commit()

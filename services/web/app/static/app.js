@@ -256,6 +256,12 @@ function applyLiveState(payload) {
   const modeChip = document.querySelector("#mode-chip");
   const controllerState = document.querySelector("#controller-state");
   const controllerReason = document.querySelector("#controller-reason");
+  const beerProbeStatus = document.querySelector("#beer-probe-status");
+  const beerProbeRom = document.querySelector("#beer-probe-rom");
+  const chamberProbeStatus = document.querySelector("#chamber-probe-status");
+  const chamberProbeRom = document.querySelector("#chamber-probe-rom");
+  const secondaryEnabled = document.querySelector("#secondary-enabled");
+  const controlSensor = document.querySelector("#control-sensor");
   const heatingState = document.querySelector("#heating-state");
   const coolingState = document.querySelector("#cooling-state");
   const heatingStatusText = document.querySelector("#heating-status-text");
@@ -286,6 +292,28 @@ function applyLiveState(payload) {
   }
   if (controllerReason) {
     controllerReason.textContent = payload.controller_reason || "n/a";
+  }
+  if (beerProbeStatus) {
+    beerProbeStatus.textContent = payload.beer_probe_present
+      ? (payload.beer_probe_valid ? "present" : "invalid")
+      : "missing";
+  }
+  if (beerProbeRom) {
+    beerProbeRom.textContent = payload.beer_probe_rom || "n/a";
+  }
+  if (chamberProbeStatus) {
+    chamberProbeStatus.textContent = payload.chamber_probe_present
+      ? (payload.chamber_probe_valid ? "present" : "invalid")
+      : "missing";
+  }
+  if (chamberProbeRom) {
+    chamberProbeRom.textContent = payload.chamber_probe_rom || "n/a";
+  }
+  if (secondaryEnabled) {
+    secondaryEnabled.textContent = payload.secondary_sensor_enabled ? "yes" : "no";
+  }
+  if (controlSensor) {
+    controlSensor.textContent = payload.control_sensor || "primary";
   }
   if (heatingState) {
     heatingState.textContent = payload.heating_state;

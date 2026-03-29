@@ -28,6 +28,14 @@ public:
         String controllerState = "idle";
         String controllerReason = "idle";
         bool automaticControlActive = false;
+        bool secondarySensorEnabled = false;
+        String controlSensor = "primary";
+        bool beerProbePresent = false;
+        bool beerProbeValid = false;
+        String beerProbeRom;
+        bool chamberProbePresent = false;
+        bool chamberProbeValid = false;
+        String chamberProbeRom;
         String profileId;
     };
 

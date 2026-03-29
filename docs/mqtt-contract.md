@@ -14,6 +14,7 @@ Important scope note:
 - bootstrap/system config should not rely exclusively on MQTT
 - physical actuation should remain local to the ESP32 and its selected output
   backend
+- secondary chamber probe support should be optional and enable-able in config
 
 ## Topic layout
 
@@ -95,6 +96,8 @@ Payload example:
   "ts": "2026-03-29T14:00:00Z",
   "temp_primary_c": 18.42,
   "temp_secondary_c": 17.10,
+  "temp_beer_c": 18.42,
+  "temp_chamber_c": 17.10,
   "setpoint_c": 18.50,
   "mode": "profile",
   "profile_id": "ale-primary",
@@ -248,6 +251,7 @@ Do not make MQTT the only path for:
 - output backend selection
 - Shelly IP/host and auth
 - GPIO pin mapping
+- OneWire sensor bus GPIO and optional sensor ROM mapping
 
 Reason:
 

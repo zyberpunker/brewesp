@@ -59,7 +59,10 @@ The system is split into three parts:
   delay, profiles, ramping, thermostat mode.
 - Replace EEPROM-oriented remote control with JSON payloads over MQTT.
 - Keep two probes in scope from the start: product probe and chamber probe.
+- Use the beer/product probe as the primary control sensor and the chamber
+  probe as the secondary diagnostic/limiting sensor.
 - Let the web service be the primary settings UI.
+- Use an `AZ-Touch MOD` touchscreen panel as the planned local operator UI.
 - Use Docker for the companion services, with MQTT broker + web service +
   database.
 

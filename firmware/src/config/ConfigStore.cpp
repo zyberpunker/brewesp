@@ -67,6 +67,12 @@ bool ConfigStore::load(SystemConfig& config) {
 
     config.heartbeat.intervalSeconds =
         prefs.getUInt("hb_int", config.heartbeat.intervalSeconds);
+    config.sensors.oneWireGpio = prefs.getUChar("sns_gpio", config.sensors.oneWireGpio);
+    config.sensors.pollIntervalSeconds =
+        prefs.getUInt("sns_poll", config.sensors.pollIntervalSeconds);
+    config.sensors.beerProbeRom = prefs.getString("sns_beer", config.sensors.beerProbeRom);
+    config.sensors.chamberProbeRom =
+        prefs.getString("sns_chmb", config.sensors.chamberProbeRom);
 
     config.localUi.enabled = prefs.getBool("ui_en", config.localUi.enabled);
     config.localUi.headlessAllowed = prefs.getBool("ui_headless", true);
@@ -123,6 +129,10 @@ bool ConfigStore::save(const SystemConfig& config) {
     prefs.putString("mqtt_pref", config.mqtt.topicPrefix);
 
     prefs.putUInt("hb_int", config.heartbeat.intervalSeconds);
+    prefs.putUChar("sns_gpio", config.sensors.oneWireGpio);
+    prefs.putUInt("sns_poll", config.sensors.pollIntervalSeconds);
+    prefs.putString("sns_beer", config.sensors.beerProbeRom);
+    prefs.putString("sns_chmb", config.sensors.chamberProbeRom);
 
     prefs.putBool("ui_en", config.localUi.enabled);
     prefs.putBool("ui_headless", config.localUi.headlessAllowed);
@@ -173,6 +183,16 @@ bool ConfigStore::loadFermentationConfig(FermentationConfig& config) {
         prefs.getUInt("fcfg_coold", config.thermostat.coolingDelaySeconds);
     config.thermostat.heatingDelaySeconds =
         prefs.getUInt("fcfg_heatd", config.thermostat.heatingDelaySeconds);
+    config.sensors.primaryOffsetC =
+        prefs.getFloat("fcfg_poff", config.sensors.primaryOffsetC);
+    config.sensors.secondaryEnabled =
+        prefs.getBool("fcfg_s2en", config.sensors.secondaryEnabled);
+    config.sensors.secondaryOffsetC =
+        prefs.getFloat("fcfg_s2off", config.sensors.secondaryOffsetC);
+    config.sensors.secondaryLimitHysteresisC =
+        prefs.getFloat("fcfg_s2hy", config.sensors.secondaryLimitHysteresisC);
+    config.sensors.controlSensor =
+        prefs.getString("fcfg_ctrl", config.sensors.controlSensor);
 
     prefs.end();
     return true;
@@ -193,6 +213,11 @@ bool ConfigStore::saveFermentationConfig(const FermentationConfig& config) {
     prefs.putFloat("fcfg_hyst", config.thermostat.hysteresisC);
     prefs.putUInt("fcfg_coold", config.thermostat.coolingDelaySeconds);
     prefs.putUInt("fcfg_heatd", config.thermostat.heatingDelaySeconds);
+    prefs.putFloat("fcfg_poff", config.sensors.primaryOffsetC);
+    prefs.putBool("fcfg_s2en", config.sensors.secondaryEnabled);
+    prefs.putFloat("fcfg_s2off", config.sensors.secondaryOffsetC);
+    prefs.putFloat("fcfg_s2hy", config.sensors.secondaryLimitHysteresisC);
+    prefs.putString("fcfg_ctrl", config.sensors.controlSensor);
 
     prefs.end();
     return true;

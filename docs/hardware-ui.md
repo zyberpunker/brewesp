@@ -13,118 +13,144 @@ Use the existing ESP32 board already available in the project context:
 
 Reason:
 
-- enough performance for control loop, MQTT, OTA, and local UI
-- no need to switch board just to get I2C
-- lower project risk than changing MCU platform now
+- enough performance for control loop, MQTT, OTA, local touchscreen UI, and
+  history telemetry
+- no need to switch MCU platform now
+- lower project risk than changing to a different ESP family
+
+## Chosen local panel direction
+
+Use an `AZ-Touch MOD` style wall panel with:
+
+- `2.4"` TFT display
+- `ILI9341` display controller
+- `XPT2046` resistive touch controller
+- built-in wall enclosure
+- built-in buzzer
+- direct fit for `ESP32 DevKitC` style boards
+
+Sources used for the hardware assumption:
+
+- AZ-Delivery product page: [AZ-Touch MOD 2.4"](https://www.az-delivery.de/en/products/az-touch-wandgehauseset-mit-touchscreen-fur-esp8266-und-esp32)
+- openHASP hardware page: [AZ-Touch MOD](https://www.openhasp.com/0.7.0/hardware/az-delivery/az-touch/)
+- AZ-Delivery wiring article: [AZ-Touch MOD with ESP32](https://www.az-delivery.uk/es/blogs/azdelivery-blog-fur-arduino-und-raspberry-pi/terminanzeige-mit-az-touch-mod-am-esp32-mqtt-node-red-und-esphome-teil-3)
+
+## Chosen sensor direction
+
+Use two `DS18B20` probes from the start:
+
+1. `beer probe`
+   attached to the fermenter or thermowell and used as the primary control
+   variable
+2. `chamber probe`
+   placed in the chamber/fridge air and used for diagnostics, limiting, and
+   later safety logic
+
+This mirrors the STC-1000+ two-probe concept well, but with clearer role
+separation for fermentation:
+
+- beer probe controls the process
+- chamber probe helps explain chamber behavior and allows smarter limiting
 
 ## Local UI direction
 
+The touchscreen becomes the primary local operator interface.
+
 Use:
 
-- external `128x64` monochrome OLED
-- `I2C` connection
-- `4` physical buttons
+- touch targets instead of four fixed hardware buttons
+- one or more large on-screen controls for setpoint up/down
+- simple page navigation optimized for operation while standing in front of the
+  fermentation chamber
 
-Recommended local functions:
+The web service remains the primary place for:
 
-- `Up`: increase setpoint or move up in menu
-- `Down`: decrease setpoint or move down in menu
-- `Select`: confirm or activate selected action
-- `Back`: close menu, go back, or acknowledge alarm
+- full configuration
+- profiles
+- history
+- device administration
 
-The local UI should be an operator panel, not the primary configuration system.
-The web service remains the main place for full settings and profiles.
+The local panel should be optimized for:
 
-The controller must also support running without any local panel hardware.
+- viewing current beer and chamber temperatures
+- quick setpoint changes
+- manual output override
+- fault acknowledgement
+- diagnostics and recovery guidance
 
-Headless mode requirements:
+## Headless mode requirements
 
-- controller starts and runs normally without display connected
-- controller starts and runs normally without buttons connected
+The controller must still support running without the local panel connected.
+
+That means:
+
+- controller starts and runs normally without the touchscreen connected
+- controller starts and runs normally without touch input available
 - local UI features are enabled only when configured in `system_config`
 - all critical control and configuration paths remain available through network
   interfaces
 
-## Recommended display type
+## Recommended UI model
 
-First choice:
+The local touchscreen should be a small appliance UI, not a full duplicate of
+the web app.
 
-- `SSD1306` or `SH1106` based `128x64` OLED over I2C at `3.3V`
+### Main screen
 
-Reason:
+Show:
 
-- widely supported on ESP32
-- low pin count
-- enough resolution for temperatures, state, Wi-Fi, MQTT, alarms
-- simple and robust for a controller appliance
-- display sleep behavior can reduce OLED burn-in risk
-
-## Suggested wiring model
-
-These are proposed defaults, not hard requirements.
-
-- `SDA`: `GPIO21`
-- `SCL`: `GPIO22`
-- `BTN_UP`: `GPIO32`
-- `BTN_DOWN`: `GPIO33`
-- `BTN_SELECT`: `GPIO25`
-- `BTN_BACK`: `GPIO26`
-
-Notes:
-
-- all buttons should use pull-up logic and be active-low
-- exact pins should remain configurable in `system_config`
-- final pin selection must avoid conflicts with boot strapping and board-specific
-  constraints
-- these pins are used only when local buttons are enabled
-- recommended fixed wiring defaults are documented in [wiring.md](C:\Users\ola\git\brewesp\docs\wiring.md)
-
-## UI screen priorities
-
-### Home screen
-
-- current primary temperature
-- current setpoint
+- beer temperature
+- chamber temperature
+- active setpoint
 - active mode
-- heating/cooling status
+- heating/cooling state
+- controller state
 - Wi-Fi and MQTT status
-- fault/alarm indicator
+- alarm/fault indicator
 
 ### Quick actions
 
-- adjust setpoint up/down
-- pause/resume active profile
-- disable heating
-- disable cooling
+Expose large touch targets for:
+
+- `Setpoint -`
+- `Setpoint +`
+- `Heat Off`
+- `Cool Off`
+- `Resume/Pause`
+- `Diagnostics`
 
 ### Diagnostics
+
+Show:
 
 - firmware version
 - uptime
 - IP address
 - RSSI
 - output backend summary
+- sensor status
+- recovery/setup hints
 
 ## Locked v1 local UI behavior
 
-This section defines the first implementation target for the OLED and buttons.
+This section defines the first implementation target for the touchscreen.
 
 ### Screens in v1
 
-Use only two screens in the first version:
+Use only three screens in the first version:
 
 1. `home`
-2. `diagnostics`
+2. `manual`
+3. `diagnostics`
 
-Any other actions should be done through a simple menu overlay, not full extra
-screens.
+The interaction model should stay shallow. Avoid nested touch menus in v1.
 
 ### Home screen contents
 
 The home screen should show:
 
-- primary temperature
-- secondary temperature if available
+- beer temperature as the most prominent number
+- chamber temperature as a secondary number
 - active setpoint
 - active mode: `thermostat` or `profile`
 - output state: `heating`, `cooling`, or `idle`
@@ -132,21 +158,45 @@ The home screen should show:
 - MQTT status
 - fault or alarm marker
 
-### Display sleep behavior in v1
+### Manual screen contents
 
-The OLED should not stay fully lit forever.
+The manual screen should show:
+
+- `Setpoint -`
+- `Setpoint +`
+- `Disable Heating`
+- `Disable Cooling`
+- `Back`
+
+### Diagnostics screen contents
+
+The diagnostics screen should show:
+
+- firmware version
+- uptime
+- IP address
+- Wi-Fi RSSI
+- MQTT connected/disconnected
+- controller state
+- output backend type for heating and cooling
+- beer probe presence/status
+- chamber probe presence/status
+
+## Display sleep behavior in v1
+
+The TFT backlight should not stay fully lit forever.
 
 Default behavior:
 
 - dim after `30` seconds of inactivity
 - turn display off after `120` seconds of inactivity
-- any button press wakes the display
+- any touch wakes the display
 
 To avoid accidental actions:
 
-- if the display is off, the first button press wakes it
-- that wake press should not change setpoint or trigger menu actions
-- the next press performs the intended action
+- if the display is off, the first touch wakes it
+- that wake touch should not change setpoint or trigger a control action
+- the next touch performs the intended action
 
 Automatic wake events:
 
@@ -156,75 +206,23 @@ Automatic wake events:
 
 Display should stay awake while:
 
-- the menu is open
+- the manual screen is open
 - the diagnostics screen is open
 - the user is actively changing setpoint
 - an unacknowledged fault is on screen
 
-### Button behavior in v1
+## v1 local setpoint semantics
 
-#### `Up`
-
-- short press on `home`: increase active setpoint
-- short press in menu: move selection up
-- short press in `diagnostics`: scroll up if needed
-
-#### `Down`
-
-- short press on `home`: decrease active setpoint
-- short press in menu: move selection down
-- short press in `diagnostics`: scroll down if needed
-
-#### `Select`
-
-- short press on `home`: open menu
-- short press in menu: activate selected item
-- short press in `diagnostics`: no action
-
-#### `Back`
-
-- short press on `home`: acknowledge active alarm if present
-- short press in menu: close menu and return to `home`
-- short press in `diagnostics`: return to `home`
-- long press anywhere: return to `home`
-
-### v1 menu items
-
-Keep the menu intentionally small.
-
-Menu entries:
-
-1. `Pause/Resume Profile`
-2. `Disable Heating`
-3. `Disable Cooling`
-4. `Diagnostics`
-5. `Back`
-
-### v1 local setpoint semantics
-
-Local setpoint changes on the home screen should:
+Local setpoint changes on the touchscreen should:
 
 - update the active setpoint immediately on the device
 - be treated as a local override of the running control target
 - be published in device state so the web service can display it
 
-The web service should later decide whether to persist that override into the
-main fermentation configuration.
+The web service can later decide whether to persist that override into the main
+fermentation configuration.
 
-### v1 profile behavior
-
-The local panel may:
-
-- pause an active profile
-- resume a paused profile
-
-The local panel should not in v1:
-
-- edit profile steps
-- create profiles
-- change ramping behavior
-
-### v1 output disable semantics
+## v1 output disable semantics
 
 `Disable Heating` and `Disable Cooling` are local operator overrides.
 
@@ -234,29 +232,19 @@ Behavior:
 - disabling cooling blocks automatic cooling requests
 - disabling one output must not affect the other
 - these overrides must be visible in MQTT state and on the home screen
-- these overrides remain subject to sensor-fault shutdown and other safety rules
+- these overrides remain subject to sensor-fault shutdown and other safety
+  rules
 
-### v1 diagnostics screen
+## Deferred to later versions
 
-The diagnostics screen should show:
-
-- firmware version
-- uptime
-- IP address
-- Wi-Fi RSSI
-- MQTT broker connected/disconnected
-- output backend type for heating and cooling
-
-### Deferred to later versions
-
-Do not include these in the first local UI implementation:
+Do not include these in the first local touchscreen implementation:
 
 - local profile editing
 - local Wi-Fi provisioning
 - local MQTT broker editing
 - OTA initiation from the local screen
 - historical graphs on-device
-- touch-style nested menus
+- keyboard-like text input on the panel
 
 ## Safety behavior for local controls
 
@@ -273,16 +261,16 @@ That means:
 
 Phase 1 local UI should support:
 
-- show temperatures and current state
+- show beer and chamber temperatures
 - raise/lower active setpoint
 - show Wi-Fi/MQTT connectivity
 - show faults
-- support four-button navigation: `Up`, `Down`, `Select`, `Back`
+- support simple touch navigation between `home`, `manual`, and `diagnostics`
 
 Phase 2 can add:
 
 - profile pause/resume
-- menu navigation
+- chamber limit settings
 - local network diagnostics
 - local onboarding helpers
 
@@ -294,13 +282,10 @@ surface.
 Recommended behavior:
 
 - first-time setup happens through the ESP32 recovery AP and web page
-- the local OLED should show that setup mode is active
-- the OLED should display the recovery SSID and IP address
-- a boot-time button hold should be able to force recovery mode
-
-Suggested manual recovery:
-
-- hold `Back` during boot to enter recovery AP mode
+- the touchscreen should show that setup mode is active
+- the touchscreen should display the recovery SSID and IP address
+- a small hidden service button is still recommended for forced recovery during
+  boot, even if the normal operator interaction is touch-based
 
 During recovery mode, the display should show:
 

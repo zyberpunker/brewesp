@@ -8,6 +8,7 @@
 #include "network/ProvisioningManager.h"
 #include "output/KasaDiscovery.h"
 #include "output/OutputManager.h"
+#include "sensor/SensorManager.h"
 #include "ui/LocalUiManager.h"
 
 class App {
@@ -36,6 +37,7 @@ private:
     MqttManager mqtt_;
     KasaDiscovery kasaDiscovery_;
     OutputManager outputs_;
+    SensorManager sensors_;
     LocalUiManager localUi_;
     uint32_t lastHeartbeatLogMs_ = 0;
     uint32_t wifiConnectStartedMs_ = 0;

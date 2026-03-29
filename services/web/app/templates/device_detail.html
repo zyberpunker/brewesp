@@ -92,6 +92,34 @@
         <input type="number" min="0" max="3600" name="heating_delay_s" value="{{ fermentation_config.heating_delay_s if fermentation_config else 120 }}">
       </label>
 
+      <label>
+        <span>Primary probe offset (°C)</span>
+        <input type="number" step="0.1" min="-5" max="5" name="primary_offset_c" value="{{ fermentation_config.primary_offset_c if fermentation_config else 0.0 }}">
+      </label>
+
+      <label class="checkbox-row">
+        <input type="checkbox" name="secondary_enabled" {% if fermentation_config and fermentation_config.secondary_enabled %}checked{% endif %}>
+        <span>Enable secondary chamber probe</span>
+      </label>
+
+      <label>
+        <span>Control sensor</span>
+        <select name="control_sensor">
+          <option value="primary" {% if not fermentation_config or fermentation_config.control_sensor == 'primary' %}selected{% endif %}>Primary (beer)</option>
+          <option value="secondary" {% if fermentation_config and fermentation_config.control_sensor == 'secondary' %}selected{% endif %}>Secondary (chamber)</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Secondary probe offset (°C)</span>
+        <input type="number" step="0.1" min="-5" max="5" name="secondary_offset_c" value="{{ fermentation_config.secondary_offset_c if fermentation_config and fermentation_config.secondary_offset_c is not none else 0.0 }}">
+      </label>
+
+      <label>
+        <span>Secondary limit hysteresis (°C)</span>
+        <input type="number" step="0.1" min="0.1" max="25" name="secondary_limit_hysteresis_c" value="{{ fermentation_config.secondary_limit_hysteresis_c if fermentation_config and fermentation_config.secondary_limit_hysteresis_c is not none else 1.5 }}">
+      </label>
+
       <div class="config-meta">
         <span id="config-desired-version">Desired version {{ fermentation_config.desired_version if fermentation_config else 1 }}</span>
         <span id="config-last-apply">
@@ -131,6 +159,23 @@
       <div><dt>Cooling</dt><dd id="cooling-state">{{ device.cooling_state or "unknown" }}</dd></div>
       <div><dt>RSSI</dt><dd>{{ device.last_rssi or "n/a" }}</dd></div>
       <div><dt>Heap free</dt><dd>{{ device.last_heap_free or "n/a" }}</dd></div>
+    </dl>
+  </article>
+
+  <article class="m3-card detail-card">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Sensors</p>
+        <h3>Probe mapping</h3>
+      </div>
+    </div>
+    <dl class="spec-grid">
+      <div><dt>Beer probe</dt><dd id="beer-probe-status">{% if device.last_payload and device.last_payload.beer_probe_present %}{% if device.last_payload.beer_probe_valid %}present{% else %}invalid{% endif %}{% else %}missing{% endif %}</dd></div>
+      <div><dt>Beer ROM</dt><dd id="beer-probe-rom">{{ device.last_payload.beer_probe_rom if device.last_payload and device.last_payload.beer_probe_rom else "n/a" }}</dd></div>
+      <div><dt>Chamber probe</dt><dd id="chamber-probe-status">{% if device.last_payload and device.last_payload.chamber_probe_present %}{% if device.last_payload.chamber_probe_valid %}present{% else %}invalid{% endif %}{% else %}missing{% endif %}</dd></div>
+      <div><dt>Chamber ROM</dt><dd id="chamber-probe-rom">{{ device.last_payload.chamber_probe_rom if device.last_payload and device.last_payload.chamber_probe_rom else "n/a" }}</dd></div>
+      <div><dt>Secondary enabled</dt><dd id="secondary-enabled">{{ "yes" if device.last_payload and device.last_payload.secondary_sensor_enabled else "no" }}</dd></div>
+      <div><dt>Control sensor</dt><dd id="control-sensor">{{ device.last_payload.control_sensor if device.last_payload and device.last_payload.control_sensor else "primary" }}</dd></div>
     </dl>
   </article>
 

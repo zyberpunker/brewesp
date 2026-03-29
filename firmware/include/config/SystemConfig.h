@@ -75,11 +75,19 @@ struct HeartbeatConfig {
     uint32_t intervalSeconds = 60;
 };
 
+struct SensorBusConfig {
+    uint8_t oneWireGpio = 32;
+    uint32_t pollIntervalSeconds = 5;
+    String beerProbeRom;
+    String chamberProbeRom;
+};
+
 struct SystemConfig {
     String deviceId = "brewesp-dev";
     WifiConfig wifi;
     MqttConfig mqtt;
     HeartbeatConfig heartbeat;
+    SensorBusConfig sensors;
     LocalUiConfig localUi;
     DisplayConfig display;
     ButtonsConfig buttons;

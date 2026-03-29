@@ -208,6 +208,14 @@ void MqttManager::publishState(
     doc["controller_state"] = telemetry.controllerState;
     doc["controller_reason"] = telemetry.controllerReason;
     doc["automatic_control_active"] = telemetry.automaticControlActive;
+    doc["secondary_sensor_enabled"] = telemetry.secondarySensorEnabled;
+    doc["control_sensor"] = telemetry.controlSensor;
+    doc["beer_probe_present"] = telemetry.beerProbePresent;
+    doc["beer_probe_valid"] = telemetry.beerProbeValid;
+    doc["beer_probe_rom"] = telemetry.beerProbeRom;
+    doc["chamber_probe_present"] = telemetry.chamberProbePresent;
+    doc["chamber_probe_valid"] = telemetry.chamberProbeValid;
+    doc["chamber_probe_rom"] = telemetry.chamberProbeRom;
     if (telemetry.hasSetpoint) {
         doc["setpoint_c"] = telemetry.setpointC;
     } else {
@@ -233,6 +241,14 @@ void MqttManager::publishTelemetry(
     doc["controller_state"] = telemetry.controllerState;
     doc["controller_reason"] = telemetry.controllerReason;
     doc["automatic_control_active"] = telemetry.automaticControlActive;
+    doc["secondary_sensor_enabled"] = telemetry.secondarySensorEnabled;
+    doc["control_sensor"] = telemetry.controlSensor;
+    doc["beer_probe_present"] = telemetry.beerProbePresent;
+    doc["beer_probe_valid"] = telemetry.beerProbeValid;
+    doc["beer_probe_rom"] = telemetry.beerProbeRom;
+    doc["chamber_probe_present"] = telemetry.chamberProbePresent;
+    doc["chamber_probe_valid"] = telemetry.chamberProbeValid;
+    doc["chamber_probe_rom"] = telemetry.chamberProbeRom;
     doc["heating"] = outputs.heatingState() == OutputState::On;
     doc["cooling"] = outputs.coolingState() == OutputState::On;
 
@@ -378,8 +394,9 @@ void MqttManager::handleFermentationConfig(const String& payload) {
     const String deviceId = String(static_cast<const char*>(doc["device_id"] | ""));
     const String mode = String(static_cast<const char*>(doc["mode"] | ""));
     JsonObject thermostat = doc["thermostat"];
+    JsonObject sensors = doc["sensors"];
 
-    if (schemaVersion != 1 || version == 0 || deviceId.isEmpty() || thermostat.isNull()) {
+    if (schemaVersion != 1 || version == 0 || deviceId.isEmpty() || thermostat.isNull() || sensors.isNull()) {
         Serial.println("[mqtt] fermentation config missing required fields");
         return;
     }
@@ -388,11 +405,21 @@ void MqttManager::handleFermentationConfig(const String& payload) {
     const float hysteresisC = thermostat["hysteresis_c"] | NAN;
     const uint16_t coolingDelaySeconds = thermostat["cooling_delay_s"] | 0;
     const uint16_t heatingDelaySeconds = thermostat["heating_delay_s"] | 0;
+    const float primaryOffsetC = sensors["primary_offset_c"] | NAN;
+    const bool secondaryEnabled = sensors["secondary_enabled"] | false;
+    const float secondaryOffsetC = sensors["secondary_offset_c"] | 0.0f;
+    const float secondaryLimitHysteresisC = sensors["secondary_limit_hysteresis_c"] | NAN;
+    const String controlSensor = String(static_cast<const char*>(sensors["control_sensor"] | "primary"));
 
     if (
         isnan(setpointC) || setpointC < -20.0f || setpointC > 50.0f || isnan(hysteresisC)
         || hysteresisC < 0.1f || hysteresisC > 5.0f || coolingDelaySeconds > 3600
-        || heatingDelaySeconds > 3600 || (mode != "thermostat" && mode != "profile")) {
+        || heatingDelaySeconds > 3600 || isnan(primaryOffsetC) || primaryOffsetC < -5.0f
+        || primaryOffsetC > 5.0f || (secondaryEnabled && (isnan(secondaryLimitHysteresisC)
+        || secondaryLimitHysteresisC < 0.1f || secondaryLimitHysteresisC > 25.0f))
+        || (controlSensor != "primary" && controlSensor != "secondary")
+        || (controlSensor == "secondary" && !secondaryEnabled)
+        || (mode != "thermostat" && mode != "profile")) {
         Serial.println("[mqtt] fermentation config validation failed");
         return;
     }
@@ -407,6 +434,12 @@ void MqttManager::handleFermentationConfig(const String& payload) {
     updated.thermostat.hysteresisC = hysteresisC;
     updated.thermostat.coolingDelaySeconds = coolingDelaySeconds;
     updated.thermostat.heatingDelaySeconds = heatingDelaySeconds;
+    updated.sensors.primaryOffsetC = primaryOffsetC;
+    updated.sensors.secondaryEnabled = secondaryEnabled;
+    updated.sensors.secondaryOffsetC = secondaryOffsetC;
+    updated.sensors.secondaryLimitHysteresisC =
+        secondaryEnabled ? secondaryLimitHysteresisC : 1.5f;
+    updated.sensors.controlSensor = controlSensor;
     fermentationConfigHandler_(updated);
 }
 

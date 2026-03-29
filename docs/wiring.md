@@ -1,69 +1,117 @@
 # Wiring guide
 
-This document defines the recommended pinout for the first hardware build.
+This document defines the recommended pinout for the current hardware plan:
+
+- existing `ESP32-D0WD-V3` board
+- `AZ-Touch MOD` 2.4" display with resistive touch
+- `2 x DS18B20` probes on one shared OneWire bus
 
 The controller must still support headless operation, so none of the local UI
-parts are mandatory for the first power-up.
+parts are mandatory for first power-up.
 
-## Recommended pin assignments
+## AZ-Touch internal pin usage
 
-### Temperature probe
+For the `AZ-Touch MOD` with ESP32, the commonly documented internal wiring is:
 
-Use a 3-pin `DS18B20` style OneWire probe.
+| AZ-Touch function | ESP32 pin |
+|---|---|
+| Display MOSI | `GPIO23` |
+| Display MISO | `GPIO19` |
+| Display SCK | `GPIO18` |
+| Display CS | `GPIO5` |
+| Display D/C | `GPIO4` |
+| Display RESET | `GPIO22` |
+| Backlight PWM | `GPIO15` |
+| Touch CS | `GPIO14` |
+| Touch IRQ | `GPIO27` |
+| Touch shares MOSI/MISO/SCK | `GPIO23` / `GPIO19` / `GPIO18` |
 
-- `DATA`: `GPIO4`
+Sources:
+
+- [AZ-Touch MOD openHASP](https://www.openhasp.com/0.7.0/hardware/az-delivery/az-touch/)
+- [AZ-Delivery AZ-Touch ESP32 wiring article](https://www.az-delivery.uk/es/blogs/azdelivery-blog-fur-arduino-und-raspberry-pi/terminanzeige-mit-az-touch-mod-am-esp32-mqtt-node-red-und-esphome-teil-3)
+
+Important consequence:
+
+- the old `GPIO4` plan for the DS18B20 bus must not be used with AZ-Touch,
+  because `GPIO4` is already wired to the display `D/C` line
+
+## Recommended pin assignments for BrewESP
+
+### Temperature probes
+
+Use two 3-pin `DS18B20` style probes on one shared OneWire bus.
+
+- `DATA bus`: `GPIO32`
 - `VCC`: `3.3V`
 - `GND`: `GND`
+
+Probe roles:
+
+1. `beer probe`
+   attach to fermenter/thermowell and use as primary control probe
+2. `chamber probe`
+   place in the chamber air and use as secondary diagnostics/limiting probe
 
 Important:
 
-- add a `4.7k` pull-up resistor between `DATA` and `3.3V`
-- keep all temperature probes on the same OneWire data pin if more are added
-  later
+- add one `4.7k` pull-up resistor between `GPIO32` and `3.3V`
+- connect both probe data wires to the same `GPIO32`
+- identify each DS18B20 by ROM address in firmware and map it to `beer` or
+  `chamber`
+- avoid parasitic-power wiring; use proper `VCC`, `DATA`, `GND` for both probes
 
-### OLED display
+## First-time probe mapping workflow
 
-Use a `128x64` OLED based on `SSD1306` or `SH1106`.
+When the probes are connected for the first time:
 
-- `SDA`: `GPIO21`
-- `SCL`: `GPIO22`
-- `VCC`: `3.3V`
-- `GND`: `GND`
+1. Connect only the `beer probe`.
+2. Boot BrewESP and open the device page in the web UI.
+3. Read the `Beer ROM` value from the `Probe mapping` card.
+4. Disconnect power and connect the `chamber probe` as well.
+5. Boot again and read the `Chamber ROM` value.
+6. Store these ROMs in `system_config` later so the mapping stays deterministic
+   even if probes are swapped or one probe is temporarily missing.
 
-### Buttons
+Current firmware fallback behavior before ROMs are pinned:
 
-Use four momentary buttons wired as active-low.
+- first detected DS18B20 becomes `beer`
+- second detected DS18B20 becomes `chamber`
 
-- `Up`: `GPIO32`
-- `Down`: `GPIO33`
-- `Select`: `GPIO25`
-- `Back`: `GPIO26`
+That is fine for bring-up, but explicit ROM mapping is the correct end state.
 
-Recommended button wiring:
+### Optional service/recovery button
 
-- one side of each button to the GPIO pin
-- the other side of each button to `GND`
-- use internal pull-ups in firmware
+Touch is the normal local input method, but a hidden service button is still
+recommended.
+
+- `SERVICE_BTN`: `GPIO33`
+
+Suggested use:
+
+- hold during boot to force recovery AP mode
+
+### Optional buzzer
+
+The AZ-Touch board includes a buzzer on the panel PCB. Firmware support can be
+added later once the exact board revision and pin assignment are verified in the
+final assembled hardware.
 
 ## Summary table
 
 | Function | Pin |
 |---|---|
-| Temp probe data | `GPIO4` |
-| OLED SDA | `GPIO21` |
-| OLED SCL | `GPIO22` |
-| Button Up | `GPIO32` |
-| Button Down | `GPIO33` |
-| Button Select | `GPIO25` |
-| Button Back | `GPIO26` |
+| DS18B20 data bus | `GPIO32` |
+| Service / recovery button | `GPIO33` |
+| AZ-Touch display/touch | uses fixed internal wiring listed above |
 
 ## Headless mode
 
 If you have not yet connected:
 
-- temperature probe
-- display
-- buttons
+- temperature probes
+- touchscreen panel
+- service button
 
 the controller can still boot and run in headless mode for provisioning,
 network testing, MQTT testing, and relay integration work.
@@ -72,4 +120,6 @@ network testing, MQTT testing, and relay integration work.
 
 - these assignments are the recommended defaults for documentation and initial
   firmware assumptions
-- the project still keeps room for future config overrides where appropriate
+- the project should treat the beer probe as the primary control sensor
+- the chamber probe should be available from the start, even if the first
+  firmware revision uses it mainly for visibility and diagnostics

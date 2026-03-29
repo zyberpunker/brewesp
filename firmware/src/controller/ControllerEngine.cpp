@@ -7,6 +7,8 @@ constexpr uint32_t kMsPerSecond = 1000UL;
 void ControllerEngine::reset() {
     heatingLockedUntilMs_ = 0;
     coolingLockedUntilMs_ = 0;
+    heatingLimitedBySecondary_ = false;
+    coolingLimitedBySecondary_ = false;
     status_ = Status{};
     status_.reason = "idle";
 }
@@ -35,6 +37,18 @@ bool ControllerEngine::update(const FermentationConfig& config, const Inputs& in
         status_.heatingDemand = true;
     } else if (inputs.primaryTempC >= coolThresholdC) {
         status_.coolingDemand = true;
+    }
+
+    updateSecondaryLimits(config, inputs);
+
+    if (status_.heatingDemand && heatingLimitedBySecondary_) {
+        const bool changed = outputs.heatingState() == OutputState::On ? outputs.setHeating(OutputState::Off) : false;
+        return setState(State::Idle, "heating limited by chamber") || changed;
+    }
+
+    if (status_.coolingDemand && coolingLimitedBySecondary_) {
+        const bool changed = outputs.coolingState() == OutputState::On ? outputs.setCooling(OutputState::Off) : false;
+        return setState(State::Idle, "cooling limited by chamber") || changed;
     }
 
     if (status_.heatingDemand) {
@@ -126,4 +140,31 @@ uint32_t ControllerEngine::remainingSeconds(uint32_t lockedUntilMs, uint32_t now
 
     const uint32_t remainingMs = lockedUntilMs - nowMs;
     return (remainingMs + (kMsPerSecond - 1)) / kMsPerSecond;
+}
+
+void ControllerEngine::updateSecondaryLimits(const FermentationConfig& config, const Inputs& inputs) {
+    if (!config.sensors.secondaryEnabled || !inputs.hasSecondaryTemp) {
+        heatingLimitedBySecondary_ = false;
+        coolingLimitedBySecondary_ = false;
+        return;
+    }
+
+    const float setpointC = config.thermostat.setpointC;
+    const float hy2 = config.sensors.secondaryLimitHysteresisC;
+
+    if (coolingLimitedBySecondary_) {
+        if (inputs.secondaryTempC > (setpointC - (0.5f * hy2))) {
+            coolingLimitedBySecondary_ = false;
+        }
+    } else if (inputs.secondaryTempC < (setpointC - hy2)) {
+        coolingLimitedBySecondary_ = true;
+    }
+
+    if (heatingLimitedBySecondary_) {
+        if (inputs.secondaryTempC < (setpointC + (0.5f * hy2))) {
+            heatingLimitedBySecondary_ = false;
+        }
+    } else if (inputs.secondaryTempC > (setpointC + hy2)) {
+        heatingLimitedBySecondary_ = true;
+    }
 }
