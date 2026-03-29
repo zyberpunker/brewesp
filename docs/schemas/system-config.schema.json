@@ -1,0 +1,649 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brewesp.local/schemas/system-config.schema.json",
+  "title": "brewesp system_config",
+  "description": "Bootstrap and installation configuration stored locally on the ESP32.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "device_id",
+    "timezone",
+    "network",
+    "mqtt",
+    "heartbeat",
+    "outputs",
+    "ota"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-zA-Z0-9._-]+$"
+    },
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "network": {
+      "$ref": "#/$defs/network"
+    },
+    "mqtt": {
+      "$ref": "#/$defs/mqtt"
+    },
+    "heartbeat": {
+      "$ref": "#/$defs/heartbeat"
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "heating",
+        "cooling"
+      ],
+      "properties": {
+        "heating": {
+          "$ref": "#/$defs/output"
+        },
+        "cooling": {
+          "$ref": "#/$defs/output"
+        }
+      }
+    },
+    "local_ui": {
+      "$ref": "#/$defs/local_ui"
+    },
+    "display": {
+      "$ref": "#/$defs/display"
+    },
+    "buttons": {
+      "$ref": "#/$defs/buttons"
+    },
+    "ota": {
+      "$ref": "#/$defs/ota"
+    },
+    "safety": {
+      "$ref": "#/$defs/safety"
+    }
+  },
+  "$defs": {
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wifi"
+      ],
+      "properties": {
+        "wifi": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ssid",
+            "password"
+          ],
+          "properties": {
+            "ssid": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "password": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 64
+            },
+            "dhcp": {
+              "type": "boolean",
+              "default": true
+            },
+            "static_ip": {
+              "type": "string",
+              "format": "ipv4"
+            },
+            "gateway": {
+              "type": "string",
+              "format": "ipv4"
+            },
+            "subnet": {
+              "type": "string",
+              "format": "ipv4"
+            },
+            "dns": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "ipv4"
+              },
+              "maxItems": 2
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "dhcp": {
+                    "const": false
+                  }
+                },
+                "required": [
+                  "dhcp"
+                ]
+              },
+              "then": {
+                "required": [
+                  "static_ip",
+                  "gateway",
+                  "subnet"
+                ]
+              }
+            }
+          ]
+        },
+        "recovery_ap": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "ssid": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "password": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 64
+            },
+            "ip": {
+              "type": "string",
+              "format": "ipv4",
+              "default": "192.168.4.1"
+            },
+            "auto_start_when_unprovisioned": {
+              "type": "boolean",
+              "default": true
+            },
+            "start_after_wifi_failure_s": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600,
+              "default": 180
+            }
+          }
+        }
+      }
+    },
+    "mqtt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port",
+        "client_id",
+        "topic_prefix"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 1883
+        },
+        "client_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "topic_prefix": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^#+]+$"
+        },
+        "tls": {
+          "type": "boolean",
+          "default": false
+        },
+        "keepalive_s": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 300,
+          "default": 60
+        }
+      }
+    },
+    "heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interval_s",
+        "stale_after_missed",
+        "offline_after_missed"
+      ],
+      "properties": {
+        "interval_s": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 3600,
+          "default": 60
+        },
+        "stale_after_missed": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2
+        },
+        "offline_after_missed": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        }
+      }
+    },
+    "local_ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "headless_allowed": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "driver": {
+          "type": "string",
+          "enum": [
+            "ssd1306",
+            "sh1106"
+          ],
+          "default": "ssd1306"
+        },
+        "i2c_address": {
+          "type": "string",
+          "pattern": "^0x[0-9A-Fa-f]{2}$",
+          "default": "0x3C"
+        },
+        "dim_after_s": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 3600,
+          "default": 30
+        },
+        "off_after_s": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 86400,
+          "default": 120
+        },
+        "wake_on_alarm": {
+          "type": "boolean",
+          "default": true
+        },
+        "wake_requires_second_press": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "buttons": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "active_level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "high"
+          ],
+          "default": "low"
+        },
+        "pull_mode": {
+          "type": "string",
+          "enum": [
+            "internal_pullup",
+            "internal_pulldown",
+            "external"
+          ],
+          "default": "internal_pullup"
+        },
+        "up_gpio": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 39
+        },
+        "down_gpio": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 39
+        },
+        "select_gpio": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 39
+        },
+        "back_gpio": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 39
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "up_gpio",
+              "down_gpio",
+              "select_gpio",
+              "back_gpio"
+            ]
+          }
+        }
+      ]
+    },
+    "ota": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "channel",
+        "check_strategy"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "beta"
+          ],
+          "default": "stable"
+        },
+        "check_strategy": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "scheduled"
+          ],
+          "default": "manual"
+        },
+        "check_interval_s": {
+          "type": "integer",
+          "minimum": 300,
+          "maximum": 604800,
+          "default": 86400
+        },
+        "manifest_url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "ca_cert_fingerprint": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9:]{32,95}$"
+        },
+        "allow_http": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "manifest_url"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "check_strategy": {
+                "const": "scheduled"
+              }
+            },
+            "required": [
+              "check_strategy"
+            ]
+          },
+          "then": {
+            "required": [
+              "check_interval_s"
+            ]
+          }
+        }
+      ]
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sensor_fault_shutdown": {
+          "type": "boolean",
+          "default": true
+        },
+        "output_command_timeout_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 10
+        }
+      }
+    },
+    "output": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/output_gpio"
+        },
+        {
+          "$ref": "#/$defs/output_shelly_http_rpc"
+        },
+        {
+          "$ref": "#/$defs/output_kasa_local"
+        },
+        {
+          "$ref": "#/$defs/output_generic_mqtt_relay"
+        }
+      ]
+    },
+    "output_gpio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "driver",
+        "pin",
+        "active_level"
+      ],
+      "properties": {
+        "driver": {
+          "const": "gpio"
+        },
+        "pin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 39
+        },
+        "active_level": {
+          "type": "string",
+          "enum": [
+            "high",
+            "low"
+          ]
+        }
+      }
+    },
+    "output_shelly_http_rpc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "driver",
+        "host",
+        "switch_id"
+      ],
+      "properties": {
+        "driver": {
+          "const": "shelly_http_rpc"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 80
+        },
+        "switch_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7,
+          "default": 0
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "https": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "output_generic_mqtt_relay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "driver",
+        "command_topic",
+        "payload_on",
+        "payload_off"
+      ],
+      "properties": {
+        "driver": {
+          "const": "generic_mqtt_relay"
+        },
+        "command_topic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "state_topic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "payload_on": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "payload_off": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "output_kasa_local": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "driver",
+        "host"
+      ],
+      "properties": {
+        "driver": {
+          "const": "kasa_local"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "alias": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "poll_interval_s": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300,
+          "default": 30
+        }
+      }
+    }
+  }
+}

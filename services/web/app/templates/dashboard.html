@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block heading %}Fermentation Fleet{% endblock %}
+
+{% block content %}
+<section class="hero-surface">
+  <div>
+    <p class="overline">Operations Surface</p>
+    <h2>Live fermentation overview</h2>
+    <p class="hero-copy">
+      Track each BrewESP by product-relevant data first: live temperature, target temperature
+      and output state. Node health stays available, but no longer dominates the first view.
+    </p>
+  </div>
+  <div class="hero-metrics">
+    <article class="metric-card">
+      <span class="metric-card__label">Devices</span>
+      <strong>{{ devices|length }}</strong>
+    </article>
+    <article class="metric-card">
+      <span class="metric-card__label">Online</span>
+      <strong>{{ online_count }}</strong>
+    </article>
+  </div>
+</section>
+
+<section class="fleet-grid">
+  {% for device in devices %}
+  <article class="device-card m3-card">
+    <div class="device-card__top">
+      <div>
+        <p class="overline">Node</p>
+        <h3><a href="/devices/{{ device.device_id }}">{{ device.device_id }}</a></h3>
+      </div>
+      <span class="status-chip {{ device.display_status }}">{{ device.display_status }}</span>
+    </div>
+
+    <div class="temperature-metrics">
+      <div class="temperature-metric">
+        <span>Current</span>
+        <strong>{{ format_temperature(device.last_temp_c) }}</strong>
+      </div>
+      <div class="temperature-metric target">
+        <span>Target</span>
+        <strong>{{ format_temperature(device.last_target_temp_c) }}</strong>
+      </div>
+    </div>
+
+    <div class="device-state-strip">
+      <div>
+        <span class="state-label">Mode</span>
+        <strong>{{ device.last_mode or "n/a" }}</strong>
+      </div>
+      <div>
+        <span class="state-label">Heating</span>
+        <strong class="state-badge {{ device.heating_state or 'unknown' }}">{{ device.heating_state or "unknown" }}</strong>
+      </div>
+      <div>
+        <span class="state-label">Cooling</span>
+        <strong class="state-badge {{ device.cooling_state or 'unknown' }}">{{ device.cooling_state or "unknown" }}</strong>
+      </div>
+    </div>
+
+    <section class="chart-card">
+      <div class="chart-card__header">
+        <div>
+          <h4>Temperature track</h4>
+          <p>Primary temperature versus desired setpoint.</p>
+        </div>
+      </div>
+      <div
+        class="line-chart"
+        data-chart-points='{{ telemetry_series.get(device.device_id, []) | tojson | safe }}'
+        data-chart-series='[
+          {"field":"temp_primary_c","label":"Current","color":"#6750a4","format":"temperature"},
+          {"field":"setpoint_c","label":"Target","color":"#ba1a1a","format":"temperature"}
+        ]'></div>
+    </section>
+
+    <footer class="device-card__footer">
+      <span>Last heartbeat: {{ device.last_heartbeat_at or "never" }}</span>
+      <a href="/devices/{{ device.device_id }}">Open device</a>
+    </footer>
+  </article>
+  {% else %}
+  <article class="m3-card empty-state">
+    <h3>No devices yet</h3>
+    <p>As soon as a BrewESP node publishes MQTT availability or heartbeat, it will appear here.</p>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

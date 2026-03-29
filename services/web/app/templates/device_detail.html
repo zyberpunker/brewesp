@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+
+{% block heading %}{{ device.device_id }}{% endblock %}
+
+{% block content %}
+<section class="device-hero" data-device-live-url="/api/devices/{{ device.device_id }}/live">
+  <article class="hero-surface hero-surface--device">
+    <div>
+      <p class="overline">Device Detail</p>
+      <h2>{{ device.device_id }}</h2>
+      <p class="hero-copy">Live view for control, routing and device diagnostics.</p>
+    </div>
+    <div class="hero-metrics hero-metrics--device">
+      <article class="metric-card metric-card--temperature">
+        <span class="metric-card__label">Current temperature</span>
+        <strong id="temp-primary">{{ format_temperature(device.last_temp_c) }}</strong>
+      </article>
+      <article class="metric-card metric-card--temperature target">
+        <span class="metric-card__label">Target temperature</span>
+        <strong id="temp-target">{{ format_temperature(device.last_target_temp_c) }}</strong>
+      </article>
+      <article class="metric-card">
+        <span class="metric-card__label">Status</span>
+        <strong id="device-status">{{ device.display_status }}</strong>
+      </article>
+    </div>
+  </article>
+</section>
+
+<section class="detail-layout">
+  <article class="m3-card detail-card detail-card--wide">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Thermal history</p>
+        <h3>Temperature over time</h3>
+      </div>
+      <div class="inline-meta">
+        <span class="status-chip {{ device.display_status }}">{{ device.display_status }}</span>
+        <span id="mode-chip" class="ghost-chip">{{ device.last_mode or "mode n/a" }}</span>
+      </div>
+    </div>
+    <div
+      class="line-chart line-chart--large"
+      data-chart-points='{{ telemetry | tojson | safe }}'
+      data-chart-series='[
+        {"field":"temp_primary_c","label":"Primary","color":"#6750a4","format":"temperature"},
+        {"field":"temp_secondary_c","label":"Secondary","color":"#00639b","format":"temperature"},
+        {"field":"setpoint_c","label":"Target","color":"#ba1a1a","format":"temperature"}
+      ]'></div>
+  </article>
+
+  <article class="m3-card detail-card">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Fermentation config</p>
+        <h3>Controller profile</h3>
+      </div>
+    </div>
+    <form class="stack-form" method="post" action="/devices/{{ device.device_id }}/fermentation" data-async-form="fermentation">
+      <input id="desired-version-input" type="hidden" name="desired_version" value="{{ (fermentation_config.desired_version + 1) if fermentation_config else 1 }}">
+
+      <label>
+        <span>Name</span>
+        <input type="text" name="name" value="{{ fermentation_config.name if fermentation_config else 'Default fermentation' }}">
+      </label>
+
+      <label>
+        <span>Mode</span>
+        <select name="mode">
+          <option value="thermostat" {% if not fermentation_config or fermentation_config.mode == 'thermostat' %}selected{% endif %}>Thermostat</option>
+          <option value="profile" {% if fermentation_config and fermentation_config.mode == 'profile' %}selected{% endif %}>Profile</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Setpoint (°C)</span>
+        <input type="number" step="0.1" min="-20" max="50" name="setpoint_c" value="{{ fermentation_config.setpoint_c if fermentation_config else 20.0 }}">
+      </label>
+
+      <label>
+        <span>Hysteresis (°C)</span>
+        <input type="number" step="0.1" min="0.1" max="5" name="hysteresis_c" value="{{ fermentation_config.hysteresis_c if fermentation_config else 0.3 }}">
+      </label>
+
+      <label>
+        <span>Cooling delay (s)</span>
+        <input type="number" min="0" max="3600" name="cooling_delay_s" value="{{ fermentation_config.cooling_delay_s if fermentation_config else 300 }}">
+      </label>
+
+      <label>
+        <span>Heating delay (s)</span>
+        <input type="number" min="0" max="3600" name="heating_delay_s" value="{{ fermentation_config.heating_delay_s if fermentation_config else 120 }}">
+      </label>
+
+      <div class="config-meta">
+        <span id="config-desired-version">Desired version {{ fermentation_config.desired_version if fermentation_config else 1 }}</span>
+        <span id="config-last-apply">
+          Last apply:
+          {% if fermentation_config and fermentation_config.last_applied_result %}
+            {{ fermentation_config.last_applied_result }}
+            {% if fermentation_config.last_applied_version %}v{{ fermentation_config.last_applied_version }}{% endif %}
+          {% else %}
+            pending
+          {% endif %}
+        </span>
+      </div>
+
+      {% if fermentation_config and fermentation_config.last_applied_message %}
+      <p id="config-message" class="config-message">{{ fermentation_config.last_applied_message }}</p>
+      {% else %}
+      <p id="config-message" class="config-message" hidden></p>
+      {% endif %}
+
+      <button id="apply-fermentation-button" class="primary-button" type="submit">Apply fermentation config</button>
+    </form>
+  </article>
+
+  <article class="m3-card detail-card">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Current state</p>
+        <h3>Controller status</h3>
+      </div>
+    </div>
+    <dl class="spec-grid">
+      <div><dt>MQTT</dt><dd id="mqtt-state">{{ "connected" if device.mqtt_connected else "disconnected" }}</dd></div>
+      <div><dt>Last heartbeat</dt><dd id="last-heartbeat">{{ format_timestamp(device.last_heartbeat_at) }}</dd></div>
+      <div><dt>Controller</dt><dd id="controller-state">{{ device.last_payload.controller_state if device.last_payload and device.last_payload.controller_state else "unknown" }}</dd></div>
+      <div><dt>Controller reason</dt><dd id="controller-reason">{{ device.last_payload.controller_reason if device.last_payload and device.last_payload.controller_reason else "n/a" }}</dd></div>
+      <div><dt>Heating</dt><dd id="heating-state">{{ device.heating_state or "unknown" }}</dd></div>
+      <div><dt>Cooling</dt><dd id="cooling-state">{{ device.cooling_state or "unknown" }}</dd></div>
+      <div><dt>RSSI</dt><dd>{{ device.last_rssi or "n/a" }}</dd></div>
+      <div><dt>Heap free</dt><dd>{{ device.last_heap_free or "n/a" }}</dd></div>
+    </dl>
+  </article>
+
+  <article class="m3-card detail-card">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Manual control</p>
+        <h3>Output control</h3>
+      </div>
+    </div>
+    <div class="control-status-grid">
+      <div id="heating-status-card" class="control-status-card {{ heating_on_button_state }}">
+        <span>Heating</span>
+        <strong id="heating-status-text">{{ device.heating_state or "unknown" }}</strong>
+      </div>
+      <div id="cooling-status-card" class="control-status-card {{ cooling_on_button_state }}">
+        <span>Cooling</span>
+        <strong id="cooling-status-text">{{ device.cooling_state or "unknown" }}</strong>
+      </div>
+    </div>
+    <form class="button-grid" method="post" action="/devices/{{ device.device_id }}/commands" data-async-form="command">
+      <button id="heating-on-button" class="toggle-button heat {{ heating_on_button_state }}" type="submit" name="action" value="heating_on">Heat On</button>
+      <button id="heating-off-button" class="toggle-button heat-off {{ heating_off_button_state }}" type="submit" name="action" value="heating_off">Heat Off</button>
+      <button id="cooling-on-button" class="toggle-button cool {{ cooling_on_button_state }}" type="submit" name="action" value="cooling_on">Cool On</button>
+      <button id="cooling-off-button" class="toggle-button cool-off {{ cooling_off_button_state }}" type="submit" name="action" value="cooling_off">Cool Off</button>
+      <button class="danger-button" type="submit" name="action" value="all_off">All Off</button>
+    </form>
+  </article>
+
+  <article class="m3-card detail-card">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Output routing</p>
+        <h3>Relay assignment</h3>
+      </div>
+      <form method="post" action="/devices/{{ device.device_id }}/discover">
+        <button class="ghost-button" type="submit">Scan Kasa</button>
+      </form>
+    </div>
+    <form class="stack-form" method="post" action="/devices/{{ device.device_id }}/outputs">
+      <label>
+        <span>Heating relay</span>
+        <select name="heating_host">
+          <option value="">None</option>
+          {% for relay in discovered_relays %}
+          <option
+            value="{{ relay.host }}"
+            {% if assignments.get('heating') and assignments.get('heating').host == relay.host %}selected{% endif %}>
+            {{ relay.alias or relay.host }} &middot; {{ relay.host }}{% if relay.model %} &middot; {{ relay.model }}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>
+        <span>Heating host override</span>
+        <input type="text" name="heating_host_manual" placeholder="192.168.1.50">
+      </label>
+
+      <label>
+        <span>Heating alias override</span>
+        <input type="text" name="heating_alias_manual" placeholder="Heating plug">
+      </label>
+
+      <label>
+        <span>Cooling relay</span>
+        <select name="cooling_host">
+          <option value="">None</option>
+          {% for relay in discovered_relays %}
+          <option
+            value="{{ relay.host }}"
+            {% if assignments.get('cooling') and assignments.get('cooling').host == relay.host %}selected{% endif %}>
+            {{ relay.alias or relay.host }} &middot; {{ relay.host }}{% if relay.model %} &middot; {{ relay.model }}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>
+        <span>Cooling host override</span>
+        <input type="text" name="cooling_host_manual" placeholder="192.168.1.51">
+      </label>
+
+      <label>
+        <span>Cooling alias override</span>
+        <input type="text" name="cooling_alias_manual" placeholder="Cooling plug">
+      </label>
+
+      <button class="primary-button" type="submit">Apply output config</button>
+    </form>
+  </article>
+
+  <article class="m3-card detail-card">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Known relays</p>
+        <h3>Discovered devices</h3>
+      </div>
+    </div>
+    <div class="relay-list">
+      {% for relay in discovered_relays %}
+      <div class="relay-card">
+        <strong>{{ relay.alias or relay.host }}</strong>
+        <span>{{ relay.host }}{% if relay.model %} &middot; {{ relay.model }}{% endif %}</span>
+        <span>
+          {% if relay.is_on is sameas true %}On{% elif relay.is_on is sameas false %}Off{% else %}Unknown{% endif %}
+          &middot; seen {{ relay.last_seen_at }}
+        </span>
+      </div>
+      {% else %}
+      <p class="empty-copy">No Kasa devices discovered yet. Run a scan from this page.</p>
+      {% endfor %}
+    </div>
+  </article>
+
+  <article class="m3-card detail-card detail-card--wide">
+    <div class="card-heading">
+      <div>
+        <p class="overline">Raw state</p>
+        <h3>Last payload</h3>
+      </div>
+    </div>
+    <pre class="payload-box">{{ device.last_payload | tojson(indent=2) }}</pre>
+  </article>
+</section>
+{% endblock %}

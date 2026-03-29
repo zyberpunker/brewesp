@@ -1,0 +1,54 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: brewesp
+      POSTGRES_USER: brewesp
+      POSTGRES_PASSWORD: brewesp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brewesp -d brewesp"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    profiles:
+      - local-broker
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt_data:/mosquitto/data
+      - mqtt_log:/mosquitto/log
+
+  web:
+    build:
+      context: ../services/web
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BREWESP_DATABASE_URL: ${BREWESP_DATABASE_URL:-postgresql+psycopg://brewesp:brewesp@db:5432/brewesp}
+      BREWESP_MQTT_URL: ${BREWESP_MQTT_URL:-}
+      BREWESP_MQTT_HOST: ${BREWESP_MQTT_HOST:-mqtt}
+      BREWESP_MQTT_PORT: "${BREWESP_MQTT_PORT:-1883}"
+      BREWESP_MQTT_USERNAME: ${BREWESP_MQTT_USERNAME:-}
+      BREWESP_MQTT_PASSWORD: ${BREWESP_MQTT_PASSWORD:-}
+      BREWESP_MQTT_TOPIC_PREFIX: ${BREWESP_MQTT_TOPIC_PREFIX:-brewesp}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  mqtt_data:
+  mqtt_log:

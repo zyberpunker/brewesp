@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brewesp.local/schemas/fermentation-config.schema.json",
+  "title": "brewesp fermentation_config",
+  "description": "Fermentation process configuration delivered over MQTT and cached locally on the ESP32.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "version",
+    "device_id",
+    "mode",
+    "thermostat",
+    "sensors",
+    "alarms"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-zA-Z0-9._-]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "thermostat",
+        "profile"
+      ]
+    },
+    "thermostat": {
+      "$ref": "#/$defs/thermostat"
+    },
+    "sensors": {
+      "$ref": "#/$defs/sensors"
+    },
+    "alarms": {
+      "$ref": "#/$defs/alarms"
+    },
+    "profile": {
+      "$ref": "#/$defs/profile"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "profile"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "profile"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "thermostat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setpoint_c",
+        "hysteresis_c",
+        "cooling_delay_s",
+        "heating_delay_s"
+      ],
+      "properties": {
+        "setpoint_c": {
+          "type": "number",
+          "minimum": -20,
+          "maximum": 50
+        },
+        "hysteresis_c": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 5.0
+        },
+        "cooling_delay_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
+        },
+        "heating_delay_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
+        }
+      }
+    },
+    "sensors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_offset_c",
+        "secondary_enabled",
+        "control_sensor"
+      ],
+      "properties": {
+        "primary_offset_c": {
+          "type": "number",
+          "minimum": -5,
+          "maximum": 5,
+          "default": 0
+        },
+        "secondary_enabled": {
+          "type": "boolean"
+        },
+        "secondary_offset_c": {
+          "type": "number",
+          "minimum": -5,
+          "maximum": 5,
+          "default": 0
+        },
+        "secondary_limit_hysteresis_c": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 25.0
+        },
+        "control_sensor": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "secondary"
+          ],
+          "default": "primary"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "secondary_enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "secondary_enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "secondary_offset_c",
+              "secondary_limit_hysteresis_c"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "control_sensor": {
+                "const": "secondary"
+              }
+            },
+            "required": [
+              "control_sensor"
+            ]
+          },
+          "then": {
+            "properties": {
+              "secondary_enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "alarms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deviation_c"
+      ],
+      "properties": {
+        "deviation_c": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "sensor_stale_s": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300,
+          "default": 30
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ramping",
+        "steps"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        },
+        "ramping": {
+          "type": "boolean"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/profile_step"
+          }
+        }
+      }
+    },
+    "profile_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_c",
+        "duration_h"
+      ],
+      "properties": {
+        "target_c": {
+          "type": "number",
+          "minimum": -20,
+          "maximum": 50
+        },
+        "duration_h": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_title }} | brewesp</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wght@8..144,400;8..144,500;8..144,700;8..144,800&family=Material+Symbols+Rounded:FILL@0..1&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=20260329-fermentation-live">
+    <script defer src="{{ url_for('static', path='app.js') }}?v=20260329-fermentation-live"></script>
+  </head>
+  <body>
+    <div class="shell-bg shell-bg-a"></div>
+    <div class="shell-bg shell-bg-b"></div>
+    <header class="app-bar">
+      <div class="app-bar__brand">
+        <p class="overline">BrewESP Control</p>
+        <h1>{% block heading %}BrewESP{% endblock %}</h1>
+      </div>
+      <nav class="app-bar__nav">
+        <a href="/">Overview</a>
+      </nav>
+    </header>
+    <main class="app-shell">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
