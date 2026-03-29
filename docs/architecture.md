@@ -255,15 +255,15 @@ Recommended local setup fields:
 - device id
 - Wi-Fi SSID and password
 - MQTT host, port, auth, topic prefix
-- display driver and I2C address
-- AZ-Touch display driver and touch settings when local UI is enabled
+- local panel/display driver settings
+- AZ-Touch display, touch, and backlight settings when local UI is enabled
 - heating output backend
 - cooling output backend
 - Shelly connection details when applicable
 
 Recommended manual recovery entry:
 
-- hold the `Back` button during boot
+- hold the hidden service/recovery button during boot
 
 ## OTA update model
 

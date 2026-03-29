@@ -267,7 +267,7 @@ Recommended approach:
 
 Headless operation:
 
-- local OLED/buttons must be optional
+- local panel/touchscreen must be optional
 - the controller must remain operable over network interfaces without local UI
 
 Schema files:
