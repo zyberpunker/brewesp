@@ -34,6 +34,22 @@ struct ProfileConfig {
     ProfileStepConfig steps[kMaxProfileSteps];
 };
 
+struct ProfileRuntimeState {
+    bool active = false;
+    String activeProfileId;
+    String activeStepId;
+    int activeStepIndex = -1;
+    String phase = "idle";
+    bool paused = false;
+    bool waitingForManualRelease = false;
+    bool holdTimingActive = false;
+    float effectiveTargetC = 0.0f;
+    uint32_t stepStartedMs = 0;
+    uint32_t stepHoldStartedMs = 0;
+    uint32_t stepBaseElapsedSeconds = 0;
+    uint32_t holdBaseElapsedSeconds = 0;
+};
+
 struct FermentationConfig {
     uint32_t schemaVersion = 2;
     uint32_t version = 1;

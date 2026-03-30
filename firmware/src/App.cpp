@@ -5,6 +5,7 @@
 namespace {
 const uint32_t kHeartbeatLogIntervalMs = 5000;
 constexpr float kDefaultSetpointC = 20.0f;
+constexpr uint32_t kProfileRuntimePersistIntervalMs = 300000UL;
 }
 
 void App::begin() {
@@ -13,6 +14,7 @@ void App::begin() {
     fermentationConfig_ = buildDefaultFermentationConfig(config_.deviceId);
     configStore_.loadFermentationConfig(fermentationConfig_);
     initializeProfileRuntime();
+    persistProfileRuntime(millis(), true);
     mqtt_.setAppliedFermentationVersion(fermentationConfig_.version);
 
     Serial.println();
@@ -54,10 +56,11 @@ void App::update() {
     }
 
     ensureWifiConnected();
-    updateControlLoop();
+    const uint32_t nowMs = millis();
+    updateControlLoop(nowMs);
     mqtt_.update(config_, outputs_, localUi_, buildTelemetrySnapshot());
     processPendingOtaCommand();
-    if (ota_.shouldRunScheduledCheck(config_, millis())) {
+    if (ota_.shouldRunScheduledCheck(config_, nowMs)) {
         OtaManager::CheckResult check = ota_.checkForUpdate(config_);
         if (mqtt_.isConnected()) {
             mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
@@ -69,7 +72,7 @@ void App::update() {
                 buildTelemetrySnapshot());
         }
     }
-    if (otaRestartAtMs_ != 0 && millis() >= otaRestartAtMs_) {
+    if (otaRestartAtMs_ != 0 && nowMs >= otaRestartAtMs_) {
         Serial.println("[ota] rebooting into staged firmware");
         delay(250);
         otaRestartAtMs_ = 0;
@@ -77,12 +80,11 @@ void App::update() {
         ESP.restart();
     }
 
-    const uint32_t now = millis();
-    if (now - lastHeartbeatLogMs_ < kHeartbeatLogIntervalMs) {
+    if (nowMs - lastHeartbeatLogMs_ < kHeartbeatLogIntervalMs) {
         return;
     }
 
-    lastHeartbeatLogMs_ = now;
+    lastHeartbeatLogMs_ = nowMs;
 
     Serial.printf(
         "heartbeat ui=%s wifi=%s mqtt=%s heating=%s cooling=%s\r\n",
@@ -100,15 +102,18 @@ void App::beginNormalMode() {
     mqtt_.begin(config_);
 }
 
-void App::updateControlLoop() {
+void App::updateControlLoop(uint32_t nowMs) {
     localUi_.update();
     outputs_.update();
     sensors_.update(config_);
+    const ControllerEngine::Inputs controllerInputs = buildControllerInputs();
+    const bool profileCanAdvance = !isOtaLockoutActive() && controllerInputs.hasPrimaryTemp;
+    const bool profileChanged = updateProfileRuntime(nowMs, profileCanAdvance);
     if (isOtaLockoutActive()) {
         outputs_.setHeating(OutputState::Off);
         outputs_.setCooling(OutputState::Off);
         outputs_.refreshStates();
-    } else if (controller_.update(fermentationConfig_, buildControllerInputs(), outputs_)) {
+    } else if (profileChanged || controller_.update(fermentationConfig_, controllerInputs, outputs_)) {
         mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     }
 }
@@ -141,11 +146,7 @@ void App::handleFermentationConfig(const FermentationConfig& updatedConfig) {
         return;
     }
 
-    fermentationConfig_ = updatedConfig;
-    initializeProfileRuntime();
-    if (!configStore_.saveFermentationConfig(fermentationConfig_)) {
-        fermentationConfig_ = fermentationConfigRollback_;
-        profileRuntime_ = profileRuntimeRollback_;
+    if (!configStore_.saveFermentationConfig(updatedConfig)) {
         mqtt_.publishConfigApplied(
             config_,
             updatedConfig.version,
@@ -155,7 +156,15 @@ void App::handleFermentationConfig(const FermentationConfig& updatedConfig) {
         return;
     }
 
+    fermentationConfig_ = updatedConfig;
+    initializeProfileRuntime();
     controller_.reset();
+    if (fermentationConfig_.mode == "profile") {
+        updateProfileRuntime(millis(), true);
+        persistProfileRuntime(millis(), true);
+    } else {
+        clearPersistedProfileRuntime();
+    }
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     mqtt_.publishConfigApplied(
         config_,
@@ -217,19 +226,26 @@ void App::handleProfileCommand(const String& command, const String& stepId) {
     fermentationConfigRollback_ = fermentationConfig_;
     profileRuntimeRollback_ = profileRuntime_;
     bool changed = false;
+    const uint32_t nowMs = millis();
 
     if (command == "profile_pause") {
-        profileRuntime_.paused = true;
-        profileRuntime_.phase = "paused";
-        changed = true;
-    } else if (command == "profile_resume") {
-        profileRuntime_.paused = false;
-        if (profileRuntime_.waitingForManualRelease) {
-            profileRuntime_.phase = "waiting_manual_release";
-        } else {
-            profileRuntime_.phase = "holding";
+        if (!profileRuntime_.paused) {
+            freezeProfileTimers(nowMs);
+            profileRuntime_.paused = true;
+            profileRuntime_.phase = "paused";
+            changed = true;
         }
-        changed = true;
+    } else if (command == "profile_resume") {
+        if (profileRuntime_.paused) {
+            resumeProfileTimers(nowMs);
+            profileRuntime_.paused = false;
+            if (profileRuntime_.waitingForManualRelease) {
+                profileRuntime_.phase = "waiting_manual_release";
+            } else {
+                profileRuntime_.phase = "holding";
+            }
+            changed = true;
+        }
     } else if (command == "profile_release_hold") {
         if (profileRuntime_.waitingForManualRelease) {
             const int nextStep = profileRuntime_.activeStepIndex + 1;
@@ -264,6 +280,12 @@ void App::handleProfileCommand(const String& command, const String& stepId) {
         return;
     }
 
+    if (fermentationConfig_.mode == "profile" && profileRuntime_.active) {
+        updateProfileRuntime(nowMs, true);
+        persistProfileRuntime(nowMs, true);
+    } else {
+        clearPersistedProfileRuntime();
+    }
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
 }
 
@@ -335,6 +357,7 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     const ControllerEngine::Status& controllerStatus = controller_.status();
     const SensorManager::Reading& beerProbe = sensors_.beerProbe();
     const SensorManager::Reading& chamberProbe = sensors_.chamberProbe();
+    const uint32_t nowMs = millis();
     telemetry.hasSetpoint = true;
     telemetry.setpointC = fermentationConfig_.thermostat.setpointC;
     telemetry.hysteresisC = fermentationConfig_.thermostat.hysteresisC;
@@ -375,8 +398,14 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
         telemetry.waitingForManualRelease = profileRuntime_.waitingForManualRelease;
         telemetry.hasEffectiveTarget = true;
         telemetry.effectiveTargetC = profileRuntime_.effectiveTargetC;
-        telemetry.stepStartedAtSeconds = profileRuntime_.stepStartedMs / 1000UL;
-        telemetry.stepHoldStartedAtSeconds = profileRuntime_.stepHoldStartedMs / 1000UL;
+        const uint32_t stepElapsedSeconds = currentProfileStepElapsedSeconds(nowMs);
+        const uint32_t holdElapsedSeconds = currentProfileHoldElapsedSeconds(nowMs);
+        telemetry.stepStartedAtSeconds =
+            stepElapsedSeconds > (nowMs / 1000UL) ? 0 : (nowMs / 1000UL) - stepElapsedSeconds;
+        telemetry.stepHoldStartedAtSeconds =
+            (profileRuntime_.stepHoldStartedMs == 0 && profileRuntime_.holdBaseElapsedSeconds == 0)
+            ? 0
+            : (holdElapsedSeconds > (nowMs / 1000UL) ? 0 : (nowMs / 1000UL) - holdElapsedSeconds);
     }
     telemetry.otaStatus = ota_.status();
     telemetry.otaMessage = ota_.message();
@@ -430,16 +459,25 @@ FermentationConfig App::buildDefaultFermentationConfig(const String& deviceId) c
 
 void App::resetProfileRuntime() {
     profileRuntime_ = ProfileRuntimeState{};
+    lastProfileRuntimePersistMs_ = 0;
 }
 
 void App::initializeProfileRuntime() {
     resetProfileRuntime();
 
     if (fermentationConfig_.mode != "profile" || fermentationConfig_.profile.stepCount == 0) {
+        clearPersistedProfileRuntime();
+        return;
+    }
+
+    const uint32_t nowMs = millis();
+    if (restoreProfileRuntime(nowMs)) {
+        updateProfileRuntime(nowMs, true);
         return;
     }
 
     activateProfileStep(0, true);
+    updateProfileRuntime(nowMs, true);
 }
 
 bool App::activateProfileStep(uint8_t stepIndex, bool treatAsFreshStep) {
@@ -448,22 +486,241 @@ bool App::activateProfileStep(uint8_t stepIndex, bool treatAsFreshStep) {
     }
 
     const ProfileStepConfig& step = fermentationConfig_.profile.steps[stepIndex];
+    const float previousTargetC =
+        stepIndex == 0 ? step.targetC : fermentationConfig_.profile.steps[stepIndex - 1].targetC;
+    const bool hasRamp = stepIndex > 0 && step.rampDurationSeconds > 0;
     profileRuntime_.active = true;
     profileRuntime_.activeProfileId = fermentationConfig_.profile.id;
     profileRuntime_.activeStepId = step.id;
     profileRuntime_.activeStepIndex = stepIndex;
     profileRuntime_.paused = false;
-    profileRuntime_.waitingForManualRelease = step.advancePolicy == "manual_release";
-    profileRuntime_.phase = profileRuntime_.waitingForManualRelease ? "waiting_manual_release" : "holding";
-    profileRuntime_.effectiveTargetC = step.targetC;
+    profileRuntime_.waitingForManualRelease = false;
+    profileRuntime_.holdTimingActive = !hasRamp;
+    profileRuntime_.phase = hasRamp
+        ? "ramping"
+        : (step.advancePolicy == "manual_release" ? "waiting_manual_release" : "holding");
+    profileRuntime_.effectiveTargetC = hasRamp ? previousTargetC : step.targetC;
     if (treatAsFreshStep) {
-        profileRuntime_.stepStartedMs = millis();
-        profileRuntime_.stepHoldStartedMs = millis();
+        const uint32_t nowMs = millis();
+        profileRuntime_.stepStartedMs = nowMs;
+        profileRuntime_.stepHoldStartedMs = hasRamp ? 0 : nowMs;
+        profileRuntime_.stepBaseElapsedSeconds = 0;
+        profileRuntime_.holdBaseElapsedSeconds = 0;
     }
 
     fermentationConfig_.mode = "profile";
-    fermentationConfig_.thermostat.setpointC = step.targetC;
+    fermentationConfig_.thermostat.setpointC = profileRuntime_.effectiveTargetC;
     return true;
+}
+
+bool App::updateProfileRuntime(uint32_t nowMs, bool allowProgress) {
+    if (fermentationConfig_.mode != "profile" || fermentationConfig_.profile.stepCount == 0 || !profileRuntime_.active) {
+        return false;
+    }
+
+    if (
+        profileRuntime_.activeProfileId != fermentationConfig_.profile.id || profileRuntime_.activeStepIndex < 0
+        || profileRuntime_.activeStepIndex >= fermentationConfig_.profile.stepCount
+        || fermentationConfig_.profile.steps[profileRuntime_.activeStepIndex].id != profileRuntime_.activeStepId) {
+        resetProfileRuntime();
+        clearPersistedProfileRuntime();
+        return true;
+    }
+
+    const ProfileStepConfig& step = fermentationConfig_.profile.steps[profileRuntime_.activeStepIndex];
+    const float previousTargetC = profileRuntime_.activeStepIndex == 0
+        ? step.targetC
+        : fermentationConfig_.profile.steps[profileRuntime_.activeStepIndex - 1].targetC;
+    bool stateChanged = false;
+
+    if (profileRuntime_.phase == "completed") {
+        fermentationConfig_.thermostat.setpointC = step.targetC;
+        persistProfileRuntime(nowMs, false);
+        return false;
+    }
+
+    if (!allowProgress) {
+        bool stateChanged = false;
+        if (profileRuntime_.phase != "faulted") {
+            freezeProfileTimers(nowMs);
+            profileRuntime_.phase = "faulted";
+            stateChanged = true;
+        }
+        if (stateChanged) {
+            persistProfileRuntime(nowMs, true);
+        } else {
+            persistProfileRuntime(nowMs, false);
+        }
+        return stateChanged;
+    }
+
+    if (profileRuntime_.phase == "faulted") {
+        resumeProfileTimers(nowMs);
+    }
+
+    if (profileRuntime_.paused) {
+        if (profileRuntime_.phase != "paused") {
+            profileRuntime_.phase = "paused";
+            persistProfileRuntime(nowMs, true);
+            fermentationConfig_.thermostat.setpointC = profileRuntime_.effectiveTargetC;
+            return true;
+        }
+        fermentationConfig_.thermostat.setpointC = profileRuntime_.effectiveTargetC;
+        persistProfileRuntime(nowMs, false);
+        return false;
+    }
+
+    const uint32_t stepElapsedSeconds = currentProfileStepElapsedSeconds(nowMs);
+    if (profileRuntime_.activeStepIndex > 0 && step.rampDurationSeconds > 0 && stepElapsedSeconds < step.rampDurationSeconds) {
+        const float rampProgress = static_cast<float>(stepElapsedSeconds) / static_cast<float>(step.rampDurationSeconds);
+        if (profileRuntime_.phase != "ramping") {
+            profileRuntime_.phase = "ramping";
+            stateChanged = true;
+        }
+        if (profileRuntime_.waitingForManualRelease) {
+            profileRuntime_.waitingForManualRelease = false;
+            stateChanged = true;
+        }
+        if (profileRuntime_.holdTimingActive) {
+            profileRuntime_.holdTimingActive = false;
+            stateChanged = true;
+        }
+        profileRuntime_.effectiveTargetC = previousTargetC + ((step.targetC - previousTargetC) * rampProgress);
+        if (profileRuntime_.stepHoldStartedMs != 0 || profileRuntime_.holdBaseElapsedSeconds != 0) {
+            profileRuntime_.stepHoldStartedMs = 0;
+            profileRuntime_.holdBaseElapsedSeconds = 0;
+            stateChanged = true;
+        }
+        fermentationConfig_.thermostat.setpointC = profileRuntime_.effectiveTargetC;
+        persistProfileRuntime(nowMs, false);
+        return stateChanged;
+    }
+
+    fermentationConfig_.thermostat.setpointC = step.targetC;
+    profileRuntime_.effectiveTargetC = step.targetC;
+    if (!profileRuntime_.holdTimingActive) {
+        profileRuntime_.holdTimingActive = true;
+        stateChanged = true;
+    }
+    if (profileRuntime_.stepHoldStartedMs == 0) {
+        profileRuntime_.stepHoldStartedMs = nowMs;
+        profileRuntime_.holdBaseElapsedSeconds = 0;
+        stateChanged = true;
+    }
+
+    const bool waitingForManualRelease = step.advancePolicy == "manual_release";
+    const String nextPhase = waitingForManualRelease ? "waiting_manual_release" : "holding";
+    if (profileRuntime_.phase != nextPhase) {
+        profileRuntime_.phase = nextPhase;
+        stateChanged = true;
+    }
+    if (profileRuntime_.waitingForManualRelease != waitingForManualRelease) {
+        profileRuntime_.waitingForManualRelease = waitingForManualRelease;
+        stateChanged = true;
+    }
+
+    if (!waitingForManualRelease) {
+        const uint32_t holdElapsedSeconds = currentProfileHoldElapsedSeconds(nowMs);
+        if (holdElapsedSeconds >= step.holdDurationSeconds) {
+            if ((profileRuntime_.activeStepIndex + 1) < fermentationConfig_.profile.stepCount) {
+                const bool advanced = activateProfileStep(static_cast<uint8_t>(profileRuntime_.activeStepIndex + 1), true);
+                if (advanced) {
+                    persistProfileRuntime(nowMs, true);
+                }
+                return advanced;
+            }
+
+            profileRuntime_.phase = "completed";
+            profileRuntime_.waitingForManualRelease = false;
+            stateChanged = true;
+        }
+    }
+
+    if (stateChanged) {
+        persistProfileRuntime(nowMs, true);
+    } else {
+        persistProfileRuntime(nowMs, false);
+    }
+    return stateChanged;
+}
+
+bool App::restoreProfileRuntime(uint32_t nowMs) {
+    ProfileRuntimeState restored;
+    if (!configStore_.loadProfileRuntime(fermentationConfig_.version, restored)) {
+        return false;
+    }
+
+    if (
+        restored.activeProfileId != fermentationConfig_.profile.id || restored.activeStepIndex < 0
+        || restored.activeStepIndex >= fermentationConfig_.profile.stepCount
+        || fermentationConfig_.profile.steps[restored.activeStepIndex].id != restored.activeStepId) {
+        clearPersistedProfileRuntime();
+        return false;
+    }
+
+    profileRuntime_ = restored;
+    profileRuntime_.stepStartedMs = nowMs;
+    profileRuntime_.stepHoldStartedMs = profileRuntime_.holdTimingActive ? nowMs : 0;
+    fermentationConfig_.thermostat.setpointC = profileRuntime_.effectiveTargetC;
+    return true;
+}
+
+bool App::persistProfileRuntime(uint32_t nowMs, bool force) {
+    if (fermentationConfig_.mode != "profile" || !profileRuntime_.active) {
+        return false;
+    }
+
+    if (!force && nowMs - lastProfileRuntimePersistMs_ < kProfileRuntimePersistIntervalMs) {
+        return false;
+    }
+
+    if (!configStore_.saveProfileRuntime(fermentationConfig_.version, profileRuntime_, nowMs)) {
+        return false;
+    }
+
+    lastProfileRuntimePersistMs_ = nowMs;
+    return true;
+}
+
+void App::clearPersistedProfileRuntime() {
+    configStore_.clearProfileRuntime();
+    lastProfileRuntimePersistMs_ = 0;
+}
+
+uint32_t App::currentProfileStepElapsedSeconds(uint32_t nowMs) const {
+    uint32_t elapsedSeconds = profileRuntime_.stepBaseElapsedSeconds;
+    if (
+        !profileRuntime_.paused && profileRuntime_.phase != "faulted" && profileRuntime_.phase != "completed"
+        && profileRuntime_.stepStartedMs != 0) {
+        elapsedSeconds += (nowMs - profileRuntime_.stepStartedMs) / 1000UL;
+    }
+    return elapsedSeconds;
+}
+
+uint32_t App::currentProfileHoldElapsedSeconds(uint32_t nowMs) const {
+    uint32_t elapsedSeconds = profileRuntime_.holdBaseElapsedSeconds;
+    if (
+        !profileRuntime_.paused && profileRuntime_.phase != "faulted" && profileRuntime_.phase != "completed"
+        && profileRuntime_.stepHoldStartedMs != 0) {
+        elapsedSeconds += (nowMs - profileRuntime_.stepHoldStartedMs) / 1000UL;
+    }
+    return elapsedSeconds;
+}
+
+void App::freezeProfileTimers(uint32_t nowMs) {
+    profileRuntime_.stepBaseElapsedSeconds = currentProfileStepElapsedSeconds(nowMs);
+    profileRuntime_.stepStartedMs = nowMs;
+    profileRuntime_.holdBaseElapsedSeconds = currentProfileHoldElapsedSeconds(nowMs);
+    if (profileRuntime_.stepHoldStartedMs != 0) {
+        profileRuntime_.stepHoldStartedMs = nowMs;
+    }
+}
+
+void App::resumeProfileTimers(uint32_t nowMs) {
+    profileRuntime_.stepStartedMs = nowMs;
+    if (profileRuntime_.stepHoldStartedMs != 0 || profileRuntime_.holdBaseElapsedSeconds > 0) {
+        profileRuntime_.stepHoldStartedMs = nowMs;
+    }
 }
 
 void App::runKasaDiscovery() {

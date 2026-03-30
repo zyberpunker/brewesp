@@ -18,25 +18,20 @@ public:
     void update();
 
 private:
-    struct ProfileRuntimeState {
-        bool active = false;
-        String activeProfileId;
-        String activeStepId;
-        int activeStepIndex = -1;
-        String phase = "idle";
-        bool paused = false;
-        bool waitingForManualRelease = false;
-        float effectiveTargetC = 0.0f;
-        uint32_t stepStartedMs = 0;
-        uint32_t stepHoldStartedMs = 0;
-    };
-
     MqttManager::TelemetrySnapshot buildTelemetrySnapshot() const;
     FermentationConfig buildDefaultFermentationConfig(const String& deviceId) const;
     void beginNormalMode();
     void startProvisioningMode(const char* reason);
     void ensureWifiConnected();
-    void updateControlLoop();
+    bool updateProfileRuntime(uint32_t nowMs, bool allowProgress);
+    bool restoreProfileRuntime(uint32_t nowMs);
+    bool persistProfileRuntime(uint32_t nowMs, bool force);
+    void clearPersistedProfileRuntime();
+    uint32_t currentProfileStepElapsedSeconds(uint32_t nowMs) const;
+    uint32_t currentProfileHoldElapsedSeconds(uint32_t nowMs) const;
+    void freezeProfileTimers(uint32_t nowMs);
+    void resumeProfileTimers(uint32_t nowMs);
+    void updateControlLoop(uint32_t nowMs);
     void handleSystemConfig(const SystemConfig& updatedConfig);
     void handleFermentationConfig(const FermentationConfig& updatedConfig);
     void handleOutputCommand(const String& target, OutputState state);
@@ -65,6 +60,7 @@ private:
     LocalUiManager localUi_;
     ProfileRuntimeState profileRuntime_;
     ProfileRuntimeState profileRuntimeRollback_;
+    uint32_t lastProfileRuntimePersistMs_ = 0;
     uint32_t lastHeartbeatLogMs_ = 0;
     uint32_t wifiConnectStartedMs_ = 0;
     uint32_t otaRestartAtMs_ = 0;
