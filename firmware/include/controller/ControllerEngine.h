@@ -40,6 +40,7 @@ public:
     static const char* stateName(State state);
 
 private:
+    bool forceOutputsOff(OutputManager& outputs);
     bool setState(State nextState, const String& reason);
     uint32_t remainingSeconds(uint32_t lockedUntilMs, uint32_t nowMs) const;
     void updateSecondaryLimits(const FermentationConfig& config, const Inputs& inputs);

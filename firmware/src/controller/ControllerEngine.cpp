@@ -19,11 +19,13 @@ bool ControllerEngine::update(const FermentationConfig& config, const Inputs& in
     status_.coolingDemand = false;
 
     if (config.mode != "thermostat" && config.mode != "profile") {
-        return setState(State::Idle, "mode inactive");
+        const bool outputsChanged = forceOutputsOff(outputs);
+        return setState(State::Idle, "mode inactive") || outputsChanged;
     }
 
     if (!inputs.hasPrimaryTemp) {
-        return setState(State::WaitingForSensor, "awaiting primary sensor");
+        const bool outputsChanged = forceOutputsOff(outputs);
+        return setState(State::Fault, "awaiting primary sensor") || outputsChanged;
     }
 
     status_.automaticControlActive = true;
@@ -103,6 +105,14 @@ bool ControllerEngine::update(const FermentationConfig& config, const Inputs& in
 
 const ControllerEngine::Status& ControllerEngine::status() const {
     return status_;
+}
+
+bool ControllerEngine::forceOutputsOff(OutputManager& outputs) {
+    const bool heatingChanged =
+        outputs.heatingState() != OutputState::Off ? outputs.setHeating(OutputState::Off) : false;
+    const bool coolingChanged =
+        outputs.coolingState() != OutputState::Off ? outputs.setCooling(OutputState::Off) : false;
+    return heatingChanged || coolingChanged;
 }
 
 const char* ControllerEngine::stateName(State state) {
