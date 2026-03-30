@@ -6,6 +6,7 @@
 namespace {
 const char* kNamespace = "brewesp";
 constexpr size_t kMaxStoredProfileBytes = 3072;
+constexpr size_t kMaxStoredProfileRuntimeBytes = 768;
 
 OutputDriverType outputDriverFromString(const String& value) {
     if (value == "gpio") {
@@ -298,4 +299,102 @@ bool ConfigStore::saveFermentationConfig(const FermentationConfig& config) {
 
     prefs.end();
     return true;
+}
+
+bool ConfigStore::loadProfileRuntime(uint32_t expectedConfigVersion, ProfileRuntimeState& runtime) {
+    Preferences prefs;
+    if (!prefs.begin(kNamespace, true)) {
+        if (!prefs.begin(kNamespace, false)) {
+            return false;
+        }
+    }
+
+    const String runtimeJson = prefs.getString("frt_state", "");
+    prefs.end();
+    if (runtimeJson.isEmpty()) {
+        return false;
+    }
+
+    DynamicJsonDocument doc(1024);
+    if (deserializeJson(doc, runtimeJson) != DeserializationError::Ok) {
+        return false;
+    }
+
+    if ((doc["config_version"] | 0U) != expectedConfigVersion) {
+        return false;
+    }
+
+    ProfileRuntimeState loaded;
+    loaded.active = doc["active"] | false;
+    loaded.activeProfileId = String(static_cast<const char*>(doc["active_profile_id"] | ""));
+    loaded.activeStepId = String(static_cast<const char*>(doc["active_step_id"] | ""));
+    loaded.activeStepIndex = doc["active_step_index"] | -1;
+    loaded.phase = String(static_cast<const char*>(doc["phase"] | "idle"));
+    loaded.paused = doc["paused"] | false;
+    loaded.waitingForManualRelease = doc["waiting_for_manual_release"] | false;
+    loaded.holdTimingActive = doc["hold_timing_active"] | false;
+    loaded.effectiveTargetC = doc["effective_target_c"] | 0.0f;
+    loaded.stepBaseElapsedSeconds = doc["step_elapsed_s"] | 0UL;
+    loaded.holdBaseElapsedSeconds = doc["hold_elapsed_s"] | 0UL;
+    runtime = loaded;
+    return loaded.active;
+}
+
+bool ConfigStore::saveProfileRuntime(uint32_t configVersion, const ProfileRuntimeState& runtime, uint32_t nowMs) {
+    Preferences prefs;
+    if (!prefs.begin(kNamespace, false)) {
+        return false;
+    }
+
+    DynamicJsonDocument doc(1024);
+    doc["config_version"] = configVersion;
+    doc["active"] = runtime.active;
+    doc["active_profile_id"] = runtime.activeProfileId;
+    doc["active_step_id"] = runtime.activeStepId;
+    doc["active_step_index"] = runtime.activeStepIndex;
+    doc["phase"] = runtime.phase;
+    doc["paused"] = runtime.paused;
+    doc["waiting_for_manual_release"] = runtime.waitingForManualRelease;
+    doc["hold_timing_active"] = runtime.holdTimingActive;
+    doc["effective_target_c"] = runtime.effectiveTargetC;
+
+    const bool timersRunning = !runtime.paused && runtime.phase != "faulted" && runtime.phase != "completed";
+    uint32_t stepElapsedSeconds = runtime.stepBaseElapsedSeconds;
+    if (timersRunning && runtime.stepStartedMs != 0 && static_cast<int32_t>(nowMs - runtime.stepStartedMs) >= 0) {
+        stepElapsedSeconds += (nowMs - runtime.stepStartedMs) / 1000UL;
+    }
+    doc["step_elapsed_s"] = stepElapsedSeconds;
+
+    uint32_t holdElapsedSeconds = runtime.holdBaseElapsedSeconds;
+    if (timersRunning && runtime.stepHoldStartedMs != 0 && static_cast<int32_t>(nowMs - runtime.stepHoldStartedMs) >= 0) {
+        holdElapsedSeconds += (nowMs - runtime.stepHoldStartedMs) / 1000UL;
+    }
+    doc["hold_elapsed_s"] = holdElapsedSeconds;
+
+    if (doc.overflowed()) {
+        prefs.end();
+        return false;
+    }
+
+    String runtimeJson;
+    const size_t serializedLength = serializeJson(doc, runtimeJson);
+    if (serializedLength == 0 || serializedLength > kMaxStoredProfileRuntimeBytes) {
+        prefs.end();
+        return false;
+    }
+
+    const size_t storedLength = prefs.putString("frt_state", runtimeJson);
+    prefs.end();
+    return storedLength != 0 || runtimeJson.isEmpty();
+}
+
+bool ConfigStore::clearProfileRuntime() {
+    Preferences prefs;
+    if (!prefs.begin(kNamespace, false)) {
+        return false;
+    }
+
+    const bool removed = prefs.remove("frt_state");
+    prefs.end();
+    return removed;
 }
