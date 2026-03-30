@@ -125,7 +125,7 @@ Payload example:
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:00:00Z",
+  "ui": "headless",
   "mode": "thermostat",
   "setpoint_c": 19.0,
   "hysteresis_c": 0.3,
@@ -133,12 +133,35 @@ Payload example:
   "heating_delay_s": 120,
   "fw_version": "0.1.0",
   "ota_status": "idle",
-  "heating": false,
-  "cooling": true,
-  "active_config_version": 4,
-  "fault": null
+  "ota_channel": "stable",
+  "ota_available": false,
+  "ota_progress_pct": 0,
+  "ota_reboot_pending": false,
+  "heating": "off",
+  "cooling": "on",
+  "heating_desc": "gpio 25 off",
+  "cooling_desc": "kasa 192.168.1.88 on",
+  "controller_state": "cooling",
+  "controller_reason": "primary_above_setpoint",
+  "automatic_control_active": true,
+  "secondary_sensor_enabled": false,
+  "control_sensor": "primary",
+  "beer_probe_present": true,
+  "beer_probe_valid": true,
+  "beer_probe_rom": "28ff112233445566",
+  "chamber_probe_present": true,
+  "chamber_probe_valid": true,
+  "chamber_probe_rom": "28ffaa9988776655"
 }
 ```
+
+Additional OTA fields:
+
+- `ota_target_version` is included when a manifest check found a newer image
+- `ota_message` is included when firmware has a useful human-readable OTA result
+- `ota_progress_pct` is currently coarse-grained; the current firmware reports `100`
+  when the new image is staged and reboot is pending, otherwise `0`
+- `heating` and `cooling` in `state` are string enums: `on`, `off`, or `unknown`
 
 ### `history/raw`
 
@@ -242,6 +265,15 @@ Payload example:
 }
 ```
 
+Current OTA-specific commands accepted by firmware:
+
+- `check_update`
+- `start_update`
+
+For OTA commands, the requested channel may be provided either as
+`args.channel` or as a top-level `channel`. Firmware prefers `args.channel`
+when both are present.
+
 ## System config recommendation
 
 Do not make MQTT the only path for:
@@ -293,19 +325,41 @@ Recommended model:
 - ESP32 fetches a firmware manifest over HTTP/HTTPS
 - ESP32 downloads the `.bin` over HTTP/HTTPS
 - ESP32 reports progress and final status on `state` and `event`
+- scheduled checks may also run locally from saved OTA config
+- HTTPS OTA requires `ca_cert_fingerprint`
+- plain HTTP OTA requires `allow_http = true`
 
 Example event payload:
 
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:06:00Z",
+  "ts": 1743343560,
   "event": "ota_update_completed",
   "fw_version": "0.2.0",
+  "ota_status": "rebooting",
+  "target_version": "0.2.0",
   "result": "ok",
   "message": null
 }
 ```
+
+OTA-related events currently emitted by firmware:
+
+- `ota_check_completed`
+- `ota_update_completed`
+
+For `ota_check_completed`, `result` is one of:
+
+- `update_available`
+- `no_update`
+- `error`
+
+For `ota_update_completed`, `result` is one of:
+
+- `ok`
+- `no_update`
+- `error`
 
 ## Contract rules
 

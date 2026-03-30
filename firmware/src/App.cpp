@@ -23,11 +23,14 @@ void App::begin() {
     mqtt_.setOutputCommandHandler(
         [this](const String& target, OutputState state) { handleOutputCommand(target, state); });
     mqtt_.setDiscoveryRequestHandler([this]() { runKasaDiscovery(); });
+    mqtt_.setOtaCommandHandler(
+        [this](const String& command, const String& channel) { handleOtaCommand(command, channel); });
 
     localUi_.begin(config_);
     outputs_.begin(config_);
     sensors_.begin(config_);
     controller_.reset();
+    ota_.begin(config_);
 
     if (config_.wifi.ssid.isEmpty()) {
         startProvisioningMode("missing Wi-Fi config");
@@ -52,10 +55,34 @@ void App::update() {
     localUi_.update();
     outputs_.update();
     sensors_.update(config_);
-    if (controller_.update(fermentationConfig_, buildControllerInputs(), outputs_)) {
+    if (isOtaLockoutActive()) {
+        outputs_.setHeating(OutputState::Off);
+        outputs_.setCooling(OutputState::Off);
+        outputs_.refreshStates();
+    } else if (controller_.update(fermentationConfig_, buildControllerInputs(), outputs_)) {
         mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     }
     mqtt_.update(config_, outputs_, localUi_, buildTelemetrySnapshot());
+    processPendingOtaCommand();
+    if (ota_.shouldRunScheduledCheck(config_, millis())) {
+        OtaManager::CheckResult check = ota_.checkForUpdate(config_);
+        if (mqtt_.isConnected()) {
+            mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+            mqtt_.publishEvent(
+                config_,
+                "ota_check_completed",
+                check.success ? (check.updateAvailable ? "update_available" : "no_update") : "error",
+                check.message.c_str(),
+                buildTelemetrySnapshot());
+        }
+    }
+    if (otaRestartAtMs_ != 0 && millis() >= otaRestartAtMs_) {
+        Serial.println("[ota] rebooting into staged firmware");
+        delay(250);
+        otaRestartAtMs_ = 0;
+        otaShutdownPending_ = false;
+        ESP.restart();
+    }
 
     const uint32_t now = millis();
     if (now - lastHeartbeatLogMs_ < kHeartbeatLogIntervalMs) {
@@ -85,9 +112,11 @@ void App::handleSystemConfig(const SystemConfig& updatedConfig) {
     config_.heatingOutput = updatedConfig.heatingOutput;
     config_.coolingOutput = updatedConfig.coolingOutput;
     config_.heartbeat = updatedConfig.heartbeat;
+    config_.ota = updatedConfig.ota;
     configStore_.save(config_);
     sensors_.begin(config_);
     outputs_.applyConfig(config_);
+    ota_.begin(config_);
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     Serial.println("[app] applied system_config from MQTT");
 }
@@ -120,6 +149,14 @@ void App::handleOutputCommand(const String& target, OutputState state) {
         return;
     }
 
+    if (isOtaLockoutActive()) {
+        Serial.printf(
+            "[app] ignoring output command during OTA reboot pending target=%s state=%s\r\n",
+            target.c_str(),
+            state == OutputState::On ? "on" : "off");
+        return;
+    }
+
     Serial.printf(
         "[app] output command target=%s state=%s\r\n",
         target.c_str(),
@@ -143,6 +180,69 @@ void App::handleOutputCommand(const String& target, OutputState state) {
     if (changed) {
         mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     }
+}
+
+void App::handleOtaCommand(const String& command, const String& channel) {
+    Serial.printf("[app] ota command=%s channel=%s\r\n", command.c_str(), channel.c_str());
+    pendingOtaCommand_ = command;
+    pendingOtaChannel_ = channel;
+}
+
+void App::processPendingOtaCommand() {
+    if (pendingOtaCommand_.isEmpty()) {
+        return;
+    }
+
+    const String command = pendingOtaCommand_;
+    const String channel = pendingOtaChannel_;
+    pendingOtaCommand_ = "";
+    pendingOtaChannel_ = "";
+
+    if (command == "check_update") {
+        const OtaManager::CheckResult check = ota_.checkForUpdate(config_, channel);
+        if (mqtt_.isConnected()) {
+            mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+            mqtt_.publishEvent(
+                config_,
+                "ota_check_completed",
+                check.success ? (check.updateAvailable ? "update_available" : "no_update") : "error",
+                check.message.c_str(),
+                buildTelemetrySnapshot());
+        }
+        return;
+    }
+
+    if (command != "start_update") {
+        return;
+    }
+
+    const bool heatingChanged = outputs_.setHeating(OutputState::Off);
+    const bool coolingChanged = outputs_.setCooling(OutputState::Off);
+    outputs_.refreshStates();
+    if (heatingChanged || coolingChanged) {
+        mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+    }
+
+    const OtaManager::InstallResult install = ota_.startUpdate(config_, channel);
+    if (mqtt_.isConnected()) {
+        mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+        mqtt_.publishEvent(
+            config_,
+            "ota_update_completed",
+            install.success ? (ota_.status() == "rebooting" ? "ok" : "no_update") : "error",
+            install.message.c_str(),
+            buildTelemetrySnapshot());
+    }
+    if (install.success && ota_.status() == "rebooting") {
+        otaShutdownPending_ = true;
+        otaRestartAtMs_ = millis() + 1500UL;
+    } else {
+        otaShutdownPending_ = false;
+    }
+}
+
+bool App::isOtaLockoutActive() const {
+    return otaShutdownPending_ || otaRestartAtMs_ != 0;
 }
 
 MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
@@ -179,6 +279,13 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     if (chamberProbe.present) {
         telemetry.chamberProbeRom = sensors_.chamberProbeRom();
     }
+    telemetry.otaStatus = ota_.status();
+    telemetry.otaMessage = ota_.message();
+    telemetry.otaChannel = config_.ota.channel;
+    telemetry.otaTargetVersion = ota_.targetVersion();
+    telemetry.otaUpdateAvailable = ota_.status() == "update_available";
+    telemetry.otaProgressPercent = ota_.status() == "rebooting" ? 100 : 0;
+    telemetry.otaRebootPending = isOtaLockoutActive();
     return telemetry;
 }
 
@@ -293,6 +400,14 @@ SystemConfig App::buildDefaultConfig() const {
     config.coolingOutput.port = 9999;
     config.coolingOutput.alias = "cooling-plug";
     config.coolingOutput.pollIntervalSeconds = 30;
+
+    config.ota.enabled = true;
+    config.ota.channel = "stable";
+    config.ota.checkStrategy = "manual";
+    config.ota.checkIntervalSeconds = 86400;
+    config.ota.manifestUrl = "";
+    config.ota.caCertFingerprint = "";
+    config.ota.allowHttp = false;
 
     return config;
 }

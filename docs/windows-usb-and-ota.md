@@ -5,8 +5,8 @@ This document explains:
 1. how to flash the ESP32 from a Windows computer over USB-C
 2. how OTA updates are intended to work in this project
 
-The project currently has a firmware skeleton and OTA design, but OTA is not yet
-fully implemented in code. The USB flashing steps are the primary path right now.
+The repo now contains an OTA implementation path in firmware and web hosting,
+but first install on a blank ESP32 is still done over USB-C.
 
 ## Current assumptions
 
@@ -143,6 +143,11 @@ For ESP32 OTA, the firmware layout must support at least:
 
 Espressif documents this explicitly in the OTA docs.
 
+Current repo implementation:
+
+- `firmware/platformio.ini` uses `partitions_ota.csv`
+- the partition table defines `ota_0`, `ota_1`, and `otadata`
+
 Official docs:
 
 - ESP-IDF OTA overview: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html
@@ -160,16 +165,25 @@ Official docs:
 8. ESP32 reboots into the new image.
 9. ESP32 reports success or rollback/failure via MQTT state/event topics.
 
+Current repo wiring:
+
+- manifest endpoint: `/firmware/manifest/<channel>.json`
+- binary endpoint: `/firmware/files/<filename>`
+- Docker Compose mounts `firmware/.pio/build/esp32dev` into the web container at
+  `/app/firmware-files`
+- the default hosted filename is `firmware.bin`
+- scheduled OTA checks can run locally from saved config
+
 ### Why OTA should not send the binary over MQTT
 
 - firmware binaries are large compared to normal MQTT messages
 - HTTP/HTTPS is better suited to downloads, retries, and hosting
 - it is easier to inspect, cache, and secure firmware artifacts
 
-### Planned configuration for OTA
+### OTA configuration in the repo
 
-The current `system_config` schema already reserves an `ota` block with fields
-such as:
+The current `system_config` schema and firmware config store support an `ota`
+block with fields such as:
 
 - `enabled`
 - `channel`
@@ -179,13 +193,20 @@ such as:
 - `ca_cert_fingerprint`
 - `allow_http`
 
+Current behavior:
+
+- HTTPS OTA requires `ca_cert_fingerprint`
+- HTTP OTA is rejected unless `allow_http` is enabled
+- provisioning/recovery UI exposes the OTA fields and persists them locally
+
 See:
 
 - [system-config.schema.json](C:\Users\ola\git\brewesp\docs\schemas\system-config.schema.json)
 
-### Planned MQTT commands for OTA
+### MQTT commands and state for OTA
 
-The current MQTT contract reserves OTA-related commands such as:
+The current MQTT contract and firmware command handler support OTA commands such
+as:
 
 - `check_update`
 - `start_update`
@@ -194,6 +215,17 @@ and state fields such as:
 
 - `fw_version`
 - `ota_status`
+- `ota_channel`
+- `ota_available`
+- `ota_progress_pct`
+- `ota_target_version`
+- `ota_message`
+- `ota_reboot_pending`
+
+and OTA-related events such as:
+
+- `ota_check_completed`
+- `ota_update_completed`
 
 See:
 
@@ -205,18 +237,20 @@ Use this sequence:
 
 1. Get USB flashing stable on Windows.
 2. Verify serial logs and Wi-Fi provisioning.
-3. Add custom partition table for OTA.
-4. Implement OTA manager in firmware.
-5. Host firmware manifest and binaries in the web service.
-6. Add MQTT command path for OTA start/check.
-7. Test upgrade and rollback on a spare firmware image before relying on it.
+3. Build the firmware so `firmware/.pio/build/esp32dev/firmware.bin` exists.
+4. Bring up the web service so it can host the mounted firmware artifact.
+5. Set OTA config on the device, including `manifest_url` and, for HTTPS,
+   `ca_cert_fingerprint`.
+6. Trigger `check_update` or `start_update` over MQTT.
+7. Test upgrade and failure handling on a spare device before relying on it.
 
 ## Current project status
 
 Today:
 
-- USB flashing workflow is the way to install firmware
-- OTA is designed in the docs but not completed in firmware yet
+- USB flashing workflow is still the first-install path
+- OTA is implemented in firmware and web hosting in the repo
+- real-device OTA validation is still recommended before relying on it in production
 
 That means the first time you load new firmware, you should expect to do it over
 USB-C from Windows.

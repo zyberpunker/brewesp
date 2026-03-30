@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -18,6 +19,12 @@ class Settings:
     mqtt_password: str = os.getenv("BREWESP_MQTT_PASSWORD", "")
     mqtt_topic_prefix: str = os.getenv("BREWESP_MQTT_TOPIC_PREFIX", "brewesp")
     app_title: str = "brewesp control"
+    firmware_dir: Path = Path(os.getenv("BREWESP_FIRMWARE_DIR", "/app/firmware-files"))
+    firmware_base_url: str = os.getenv("BREWESP_FIRMWARE_BASE_URL", "")
+    firmware_channel: str = os.getenv("BREWESP_FIRMWARE_CHANNEL", "stable")
+    firmware_filename: str = os.getenv("BREWESP_FIRMWARE_FILENAME", "firmware.bin")
+    firmware_version: str = os.getenv("BREWESP_FIRMWARE_VERSION", "0.1.0-dev")
+    firmware_min_schema_version: int = int(os.getenv("BREWESP_FIRMWARE_MIN_SCHEMA_VERSION", "1"))
 
 
 def _resolve_settings() -> Settings:
@@ -35,6 +42,12 @@ def _resolve_settings() -> Settings:
         mqtt_password=parsed.password or base.mqtt_password,
         mqtt_topic_prefix=base.mqtt_topic_prefix,
         app_title=base.app_title,
+        firmware_dir=base.firmware_dir,
+        firmware_base_url=base.firmware_base_url,
+        firmware_channel=base.firmware_channel,
+        firmware_filename=base.firmware_filename,
+        firmware_version=base.firmware_version,
+        firmware_min_schema_version=base.firmware_min_schema_version,
     )
 
 

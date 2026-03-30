@@ -100,6 +100,15 @@ bool ConfigStore::load(SystemConfig& config) {
     config.coolingOutput.host = prefs.getString("cool_host", config.coolingOutput.host);
     config.coolingOutput.port = prefs.getUInt("cool_port", config.coolingOutput.port);
     config.coolingOutput.alias = prefs.getString("cool_alias", config.coolingOutput.alias);
+    config.ota.enabled = prefs.getBool("ota_en", config.ota.enabled);
+    config.ota.channel = prefs.getString("ota_chan", config.ota.channel);
+    config.ota.checkStrategy = prefs.getString("ota_chk", config.ota.checkStrategy);
+    config.ota.checkIntervalSeconds =
+        prefs.getUInt("ota_int", config.ota.checkIntervalSeconds);
+    config.ota.manifestUrl = prefs.getString("ota_url", config.ota.manifestUrl);
+    config.ota.caCertFingerprint =
+        prefs.getString("ota_fp", config.ota.caCertFingerprint);
+    config.ota.allowHttp = prefs.getBool("ota_http", config.ota.allowHttp);
 
     prefs.end();
     return !config.wifi.ssid.isEmpty();
@@ -158,6 +167,13 @@ bool ConfigStore::save(const SystemConfig& config) {
     prefs.putString("cool_host", config.coolingOutput.host);
     prefs.putUInt("cool_port", config.coolingOutput.port);
     prefs.putString("cool_alias", config.coolingOutput.alias);
+    prefs.putBool("ota_en", config.ota.enabled);
+    prefs.putString("ota_chan", config.ota.channel);
+    prefs.putString("ota_chk", config.ota.checkStrategy);
+    prefs.putUInt("ota_int", config.ota.checkIntervalSeconds);
+    prefs.putString("ota_url", config.ota.manifestUrl);
+    prefs.putString("ota_fp", config.ota.caCertFingerprint);
+    prefs.putBool("ota_http", config.ota.allowHttp);
 
     prefs.end();
     return true;

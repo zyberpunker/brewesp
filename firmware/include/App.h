@@ -6,6 +6,7 @@
 #include "config/SystemConfig.h"
 #include "network/MqttManager.h"
 #include "network/ProvisioningManager.h"
+#include "ota/OtaManager.h"
 #include "output/KasaDiscovery.h"
 #include "output/OutputManager.h"
 #include "sensor/SensorManager.h"
@@ -25,6 +26,9 @@ private:
     void handleSystemConfig(const SystemConfig& updatedConfig);
     void handleFermentationConfig(const FermentationConfig& updatedConfig);
     void handleOutputCommand(const String& target, OutputState state);
+    void handleOtaCommand(const String& command, const String& channel);
+    void processPendingOtaCommand();
+    bool isOtaLockoutActive() const;
     void runKasaDiscovery();
     SystemConfig buildDefaultConfig() const;
     ControllerEngine::Inputs buildControllerInputs() const;
@@ -35,11 +39,16 @@ private:
     ConfigStore configStore_;
     ProvisioningManager provisioning_;
     MqttManager mqtt_;
+    OtaManager ota_;
     KasaDiscovery kasaDiscovery_;
     OutputManager outputs_;
     SensorManager sensors_;
     LocalUiManager localUi_;
     uint32_t lastHeartbeatLogMs_ = 0;
     uint32_t wifiConnectStartedMs_ = 0;
+    uint32_t otaRestartAtMs_ = 0;
     bool provisioningMode_ = false;
+    bool otaShutdownPending_ = false;
+    String pendingOtaCommand_;
+    String pendingOtaChannel_;
 };
