@@ -31,6 +31,7 @@ private:
     uint32_t currentProfileHoldElapsedSeconds(uint32_t nowMs) const;
     void freezeProfileTimers(uint32_t nowMs);
     void resumeProfileTimers(uint32_t nowMs);
+    void updateControlLoop(uint32_t nowMs);
     void handleSystemConfig(const SystemConfig& updatedConfig);
     void handleFermentationConfig(const FermentationConfig& updatedConfig);
     void handleOutputCommand(const String& target, OutputState state);

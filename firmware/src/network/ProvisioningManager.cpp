@@ -57,16 +57,20 @@ bool ProvisioningManager::begin(const SystemConfig& currentConfig, SaveCallback 
     currentConfig_ = currentConfig;
     onSave_ = std::move(onSave);
     restartRequested_ = false;
+    active_ = false;
 
     const IPAddress apIp = parseIpOrDefault(currentConfig_.wifi.recoveryAp.ip);
     const IPAddress gateway = apIp;
     const IPAddress subnet(255, 255, 255, 0);
+    const bool keepStationActive = !currentConfig_.wifi.ssid.isEmpty();
 
     accessPointSsid_ = buildRecoverySsid(currentConfig_);
     const String apPassword = currentConfig_.wifi.recoveryAp.password;
 
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_AP);
+    if (!keepStationActive) {
+        WiFi.disconnect(true);
+    }
+    WiFi.mode(keepStationActive ? WIFI_AP_STA : WIFI_AP);
     WiFi.softAPConfig(apIp, gateway, subnet);
 
     const bool apStarted = WiFi.softAP(
