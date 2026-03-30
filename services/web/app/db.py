@@ -39,11 +39,16 @@ def _apply_bootstrap_migrations() -> None:
             "ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_secondary_temp_c DOUBLE PRECISION",
             "ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_target_temp_c DOUBLE PRECISION",
             "ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_mode VARCHAR(24)",
+            "ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS effective_target_c DOUBLE PRECISION",
+            "ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS profile_step_id VARCHAR(64)",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS primary_offset_c DOUBLE PRECISION DEFAULT 0.0",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS secondary_enabled BOOLEAN DEFAULT FALSE",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS secondary_offset_c DOUBLE PRECISION",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS secondary_limit_hysteresis_c DOUBLE PRECISION",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS control_sensor VARCHAR(24) DEFAULT 'primary'",
+            "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS deviation_c DOUBLE PRECISION DEFAULT 2.0",
+            "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS sensor_stale_s INTEGER DEFAULT 30",
+            "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS profile_plan JSONB",
         ):
             connection.execute(text(statement))
 

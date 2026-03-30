@@ -8,6 +8,8 @@
 
 class SensorManager {
 public:
+    static constexpr uint8_t kDefaultOneWireGpio = 32;
+
     struct Reading {
         bool present = false;
         bool valid = false;
@@ -46,7 +48,7 @@ private:
     bool oneWireInitialized_ = false;
     uint32_t lastPollMs_ = 0;
     uint8_t detectedCount_ = 0;
-    OneWire oneWire_{255};
+    OneWire oneWire_{kDefaultOneWireGpio};
     DallasTemperature sensors_{&oneWire_};
     ReadState beer_;
     ReadState chamber_;

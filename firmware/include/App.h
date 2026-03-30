@@ -18,6 +18,19 @@ public:
     void update();
 
 private:
+    struct ProfileRuntimeState {
+        bool active = false;
+        String activeProfileId;
+        String activeStepId;
+        int activeStepIndex = -1;
+        String phase = "idle";
+        bool paused = false;
+        bool waitingForManualRelease = false;
+        float effectiveTargetC = 0.0f;
+        uint32_t stepStartedMs = 0;
+        uint32_t stepHoldStartedMs = 0;
+    };
+
     MqttManager::TelemetrySnapshot buildTelemetrySnapshot() const;
     FermentationConfig buildDefaultFermentationConfig(const String& deviceId) const;
     void beginNormalMode();
@@ -26,6 +39,10 @@ private:
     void handleSystemConfig(const SystemConfig& updatedConfig);
     void handleFermentationConfig(const FermentationConfig& updatedConfig);
     void handleOutputCommand(const String& target, OutputState state);
+    void handleProfileCommand(const String& command, const String& stepId);
+    void resetProfileRuntime();
+    void initializeProfileRuntime();
+    bool activateProfileStep(uint8_t stepIndex, bool treatAsFreshStep);
     void handleOtaCommand(const String& command, const String& channel);
     void processPendingOtaCommand();
     bool isOtaLockoutActive() const;
@@ -35,6 +52,7 @@ private:
 
     SystemConfig config_;
     FermentationConfig fermentationConfig_;
+    FermentationConfig fermentationConfigRollback_;
     ControllerEngine controller_;
     ConfigStore configStore_;
     ProvisioningManager provisioning_;
@@ -44,6 +62,8 @@ private:
     OutputManager outputs_;
     SensorManager sensors_;
     LocalUiManager localUi_;
+    ProfileRuntimeState profileRuntime_;
+    ProfileRuntimeState profileRuntimeRollback_;
     uint32_t lastHeartbeatLogMs_ = 0;
     uint32_t wifiConnectStartedMs_ = 0;
     uint32_t otaRestartAtMs_ = 0;

@@ -133,7 +133,6 @@ class MqttBridge:
             device.mqtt_connected = device.status == "online"
             device.fw_version = payload.get("fw_version", device.fw_version)
             device.last_seen_at = utcnow()
-            device.last_payload = payload
 
     def _handle_heartbeat(self, payload: dict) -> None:
         device_id = payload.get("device_id")
@@ -152,7 +151,6 @@ class MqttBridge:
             device.ui_mode = payload.get("ui")
             device.heating_state = payload.get("heating")
             device.cooling_state = payload.get("cooling")
-            device.last_payload = payload
 
             heartbeat = DeviceHeartbeat(
                 device_id=device.id,
@@ -181,7 +179,10 @@ class MqttBridge:
             device.heating_state = _output_state_from_value(payload.get("heating")) or device.heating_state
             device.cooling_state = _output_state_from_value(payload.get("cooling")) or device.cooling_state
             device.fw_version = payload.get("fw_version", device.fw_version)
-            device.last_target_temp_c = payload.get("setpoint_c", device.last_target_temp_c)
+            device.last_target_temp_c = payload.get(
+                "effective_target_c",
+                payload.get("setpoint_c", device.last_target_temp_c),
+            )
             device.last_mode = payload.get("mode", device.last_mode)
 
     def _handle_telemetry(self, payload: dict) -> None:
@@ -195,11 +196,13 @@ class MqttBridge:
             device.last_seen_at = now
             device.last_temp_c = payload.get("temp_primary_c")
             device.last_secondary_temp_c = payload.get("temp_secondary_c")
-            device.last_target_temp_c = payload.get("setpoint_c", device.last_target_temp_c)
+            device.last_target_temp_c = payload.get(
+                "effective_target_c",
+                payload.get("setpoint_c", device.last_target_temp_c),
+            )
             device.last_mode = payload.get("mode", device.last_mode)
             device.heating_state = _output_state_from_value(payload.get("heating")) or device.heating_state
             device.cooling_state = _output_state_from_value(payload.get("cooling")) or device.cooling_state
-            device.last_payload = payload
 
             sample = DeviceTelemetry(
                 device_id=device.id,
@@ -207,8 +210,10 @@ class MqttBridge:
                 temp_primary_c=payload.get("temp_primary_c"),
                 temp_secondary_c=payload.get("temp_secondary_c"),
                 setpoint_c=payload.get("setpoint_c"),
+                effective_target_c=payload.get("effective_target_c"),
                 mode=payload.get("mode"),
                 profile_id=payload.get("profile_id"),
+                profile_step_id=payload.get("profile_step_id"),
                 heating_active=bool(payload["heating"]) if isinstance(payload.get("heating"), bool) else None,
                 cooling_active=bool(payload["cooling"]) if isinstance(payload.get("cooling"), bool) else None,
                 payload=payload,
