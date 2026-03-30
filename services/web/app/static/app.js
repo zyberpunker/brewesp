@@ -38,6 +38,27 @@ function withDerivedButtonStates(payload) {
   return next;
 }
 
+function sensorStatusFromPayload(payload, prefix) {
+  const present = payload?.[`${prefix}_probe_present`];
+  const valid = payload?.[`${prefix}_probe_valid`];
+  const stale = payload?.[`${prefix}_probe_stale`];
+
+  if (!present) {
+    return "missing";
+  }
+  if (stale) {
+    return "stale";
+  }
+  if (valid) {
+    return "present";
+  }
+  return "invalid";
+}
+
+function hasPayloadField(payload, field) {
+  return Object.prototype.hasOwnProperty.call(payload || {}, field);
+}
+
 function formatMetric(value, format) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "n/a";
@@ -256,6 +277,9 @@ function applyLiveState(payload) {
   const modeChip = document.querySelector("#mode-chip");
   const controllerState = document.querySelector("#controller-state");
   const controllerReason = document.querySelector("#controller-reason");
+  const controllerFaultState = document.querySelector("#controller-fault-state");
+  const controllerFaultBanner = document.querySelector("#controller-fault-banner");
+  const controllerFaultText = document.querySelector("#controller-fault-text");
   const beerProbeStatus = document.querySelector("#beer-probe-status");
   const beerProbeRom = document.querySelector("#beer-probe-rom");
   const chamberProbeStatus = document.querySelector("#chamber-probe-status");
@@ -275,81 +299,104 @@ function applyLiveState(payload) {
   const configMessage = document.querySelector("#config-message");
   const desiredVersionInput = document.querySelector("#desired-version-input");
 
-  if (status) {
+  if (status && hasPayloadField(payload, "display_status")) {
     status.textContent = payload.display_status;
   }
-  if (mqtt) {
+  if (mqtt && hasPayloadField(payload, "mqtt_connected")) {
     mqtt.textContent = payload.mqtt_connected ? "connected" : "disconnected";
   }
-  if (lastHeartbeat) {
+  if (lastHeartbeat && (hasPayloadField(payload, "last_heartbeat_label") || hasPayloadField(payload, "last_heartbeat_at"))) {
     lastHeartbeat.textContent = payload.last_heartbeat_label || payload.last_heartbeat_at || "never";
   }
-  if (modeChip) {
+  if (modeChip && hasPayloadField(payload, "last_mode")) {
     modeChip.textContent = payload.last_mode || "mode n/a";
   }
-  if (controllerState) {
+  if (controllerState && hasPayloadField(payload, "controller_state")) {
     controllerState.textContent = payload.controller_state || "unknown";
   }
-  if (controllerReason) {
-    controllerReason.textContent = payload.controller_reason || "n/a";
+  const hasFaultField = hasPayloadField(payload, "fault");
+  const faultValue = hasFaultField ? payload.fault : null;
+  if (controllerReason && (hasFaultField || hasPayloadField(payload, "controller_reason"))) {
+    controllerReason.textContent = faultValue || payload.controller_reason || "n/a";
   }
-  if (beerProbeStatus) {
-    beerProbeStatus.textContent = payload.beer_probe_present
-      ? (payload.beer_probe_valid ? "present" : "invalid")
-      : "missing";
+  if (controllerFaultState && hasFaultField) {
+    controllerFaultState.textContent = faultValue || "none";
   }
-  if (beerProbeRom) {
+  if (controllerFaultBanner && hasFaultField) {
+    const hasFault = Boolean(faultValue);
+    controllerFaultBanner.hidden = !hasFault;
+    controllerFaultBanner.classList.toggle("is-active", hasFault);
+  }
+  if (controllerFaultText && hasFaultField) {
+    controllerFaultText.textContent = faultValue || "none";
+  }
+  if (beerProbeStatus && (
+    hasPayloadField(payload, "beer_probe_status")
+    || hasPayloadField(payload, "beer_probe_present")
+    || hasPayloadField(payload, "beer_probe_valid")
+    || hasPayloadField(payload, "beer_probe_stale")
+  )) {
+    const status = payload.beer_probe_status || sensorStatusFromPayload(payload, "beer");
+    beerProbeStatus.textContent = status;
+    beerProbeStatus.className = `sensor-state ${status}`;
+  }
+  if (beerProbeRom && hasPayloadField(payload, "beer_probe_rom")) {
     beerProbeRom.textContent = payload.beer_probe_rom || "n/a";
   }
-  if (chamberProbeStatus) {
-    chamberProbeStatus.textContent = payload.chamber_probe_present
-      ? (payload.chamber_probe_valid ? "present" : "invalid")
-      : "missing";
+  if (chamberProbeStatus && (
+    hasPayloadField(payload, "chamber_probe_status")
+    || hasPayloadField(payload, "chamber_probe_present")
+    || hasPayloadField(payload, "chamber_probe_valid")
+    || hasPayloadField(payload, "chamber_probe_stale")
+  )) {
+    const status = payload.chamber_probe_status || sensorStatusFromPayload(payload, "chamber");
+    chamberProbeStatus.textContent = status;
+    chamberProbeStatus.className = `sensor-state ${status}`;
   }
-  if (chamberProbeRom) {
+  if (chamberProbeRom && hasPayloadField(payload, "chamber_probe_rom")) {
     chamberProbeRom.textContent = payload.chamber_probe_rom || "n/a";
   }
-  if (secondaryEnabled) {
+  if (secondaryEnabled && hasPayloadField(payload, "secondary_sensor_enabled")) {
     secondaryEnabled.textContent = payload.secondary_sensor_enabled ? "yes" : "no";
   }
-  if (controlSensor) {
+  if (controlSensor && hasPayloadField(payload, "control_sensor")) {
     controlSensor.textContent = payload.control_sensor || "primary";
   }
-  if (heatingState) {
+  if (heatingState && hasPayloadField(payload, "heating_state")) {
     heatingState.textContent = payload.heating_state;
   }
-  if (coolingState) {
+  if (coolingState && hasPayloadField(payload, "cooling_state")) {
     coolingState.textContent = payload.cooling_state;
   }
-  if (heatingStatusText) {
+  if (heatingStatusText && hasPayloadField(payload, "heating_state")) {
     heatingStatusText.textContent = payload.heating_state;
   }
-  if (coolingStatusText) {
+  if (coolingStatusText && hasPayloadField(payload, "cooling_state")) {
     coolingStatusText.textContent = payload.cooling_state;
   }
-  if (tempPrimary) {
+  if (tempPrimary && hasPayloadField(payload, "last_temp_c")) {
     tempPrimary.textContent = formatMetric(payload.last_temp_c, "temperature");
   }
-  if (tempTarget) {
+  if (tempTarget && hasPayloadField(payload, "last_target_temp_c")) {
     tempTarget.textContent = formatMetric(payload.last_target_temp_c, "temperature");
   }
-  if (configDesiredVersion) {
+  if (configDesiredVersion && hasPayloadField(payload, "fermentation_config")) {
     const desiredVersion = payload.fermentation_config?.desired_version;
     configDesiredVersion.textContent = `Desired version ${desiredVersion ?? 1}`;
   }
-  if (configLastApply) {
+  if (configLastApply && hasPayloadField(payload, "fermentation_config")) {
     const appliedResult = payload.fermentation_config?.last_applied_result;
     const appliedVersion = payload.fermentation_config?.last_applied_version;
     configLastApply.textContent = appliedResult
       ? `Last apply: ${appliedResult}${appliedVersion ? ` v${appliedVersion}` : ""}`
       : "Last apply: pending";
   }
-  if (configMessage) {
+  if (configMessage && hasPayloadField(payload, "fermentation_config")) {
     const message = payload.fermentation_config?.last_applied_message;
     configMessage.textContent = message || "";
     configMessage.hidden = !message;
   }
-  if (desiredVersionInput) {
+  if (desiredVersionInput && hasPayloadField(payload, "fermentation_config")) {
     const desiredVersion = payload.fermentation_config?.desired_version;
     desiredVersionInput.value = String((desiredVersion ?? 0) + 1);
   }

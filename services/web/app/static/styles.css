@@ -280,6 +280,38 @@ body {
   color: var(--md-sys-color-on-surface-variant);
 }
 
+.fault-banner {
+  display: grid;
+  gap: 0.25rem;
+  margin: 1rem 0 1.15rem;
+  padding: 0.95rem 1rem;
+  border-radius: 20px;
+  border: 1px solid rgba(186, 26, 26, 0.18);
+  background: rgba(186, 26, 26, 0.06);
+  color: #8c0009;
+}
+
+.fault-banner[hidden] {
+  display: none;
+}
+
+.fault-banner.is-active {
+  box-shadow: 0 8px 22px rgba(186, 26, 26, 0.12);
+}
+
+.fault-banner__label {
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.fault-banner strong {
+  font-size: 0.98rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
 .temperature-metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -456,6 +488,38 @@ body {
   font-weight: 700;
   line-height: 1.25;
   overflow-wrap: anywhere;
+}
+
+.sensor-state {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.77rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sensor-state.present {
+  background: rgba(47, 111, 79, 0.12);
+  color: #1f5f40;
+}
+
+.sensor-state.stale {
+  background: rgba(255, 185, 114, 0.22);
+  color: #7c4f00;
+}
+
+.sensor-state.invalid {
+  background: rgba(186, 26, 26, 0.12);
+  color: #8c0009;
+}
+
+.sensor-state.missing {
+  background: rgba(73, 69, 79, 0.08);
+  color: var(--md-sys-color-on-surface-variant);
 }
 
 .payload-box {

@@ -126,10 +126,27 @@ def _output_button_state(current_state: str | None, expected: str) -> str:
     return "unknown"
 
 
+def _sensor_status_label(present: bool | None, valid: bool | None, stale: bool | None) -> str:
+    if not present:
+        return "missing"
+    if stale:
+        return "stale"
+    if valid:
+        return "present"
+    return "invalid"
+
+
 def _device_live_payload(device: Device, now: datetime) -> dict:
     device = _apply_display_status(device, now)
     fermentation_config = device.fermentation_config
     state_payload = device.last_payload or {}
+    beer_probe_present = state_payload.get("beer_probe_present")
+    beer_probe_valid = state_payload.get("beer_probe_valid")
+    beer_probe_stale = state_payload.get("beer_probe_stale")
+    chamber_probe_present = state_payload.get("chamber_probe_present")
+    chamber_probe_valid = state_payload.get("chamber_probe_valid")
+    chamber_probe_stale = state_payload.get("chamber_probe_stale")
+    fault = state_payload.get("fault")
     return {
         "device_id": device.device_id,
         "display_status": device.display_status,
@@ -147,13 +164,21 @@ def _device_live_payload(device: Device, now: datetime) -> dict:
         "last_mode": device.last_mode,
         "controller_state": state_payload.get("controller_state"),
         "controller_reason": state_payload.get("controller_reason"),
+        "fault": fault,
+        "has_fault": bool(fault),
         "automatic_control_active": state_payload.get("automatic_control_active"),
         "active_config_version": state_payload.get("active_config_version"),
-        "beer_probe_present": state_payload.get("beer_probe_present"),
-        "beer_probe_valid": state_payload.get("beer_probe_valid"),
+        "beer_probe_present": beer_probe_present,
+        "beer_probe_valid": beer_probe_valid,
+        "beer_probe_stale": beer_probe_stale,
+        "beer_probe_status": _sensor_status_label(beer_probe_present, beer_probe_valid, beer_probe_stale),
         "beer_probe_rom": state_payload.get("beer_probe_rom"),
-        "chamber_probe_present": state_payload.get("chamber_probe_present"),
-        "chamber_probe_valid": state_payload.get("chamber_probe_valid"),
+        "chamber_probe_present": chamber_probe_present,
+        "chamber_probe_valid": chamber_probe_valid,
+        "chamber_probe_stale": chamber_probe_stale,
+        "chamber_probe_status": _sensor_status_label(
+            chamber_probe_present, chamber_probe_valid, chamber_probe_stale
+        ),
         "chamber_probe_rom": state_payload.get("chamber_probe_rom"),
         "secondary_sensor_enabled": state_payload.get("secondary_sensor_enabled"),
         "control_sensor": state_payload.get("control_sensor"),
@@ -464,6 +489,7 @@ def device_detail(request: Request, device_id: str):
         ).all()
 
         assignments = {assignment.role: assignment for assignment in device.output_assignments}
+        live_payload = _device_live_payload(device, now)
 
     return templates.TemplateResponse(
         request,
@@ -471,6 +497,7 @@ def device_detail(request: Request, device_id: str):
         {
             "device": device,
             "fermentation_config": device.fermentation_config,
+            "live_payload": live_payload,
             "heartbeats": list(reversed(_serialize_heartbeats(heartbeats))),
             "telemetry": list(reversed(_serialize_telemetry(telemetry))),
             "discovered_relays": discovered_relays,

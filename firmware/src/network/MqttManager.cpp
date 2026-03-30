@@ -250,10 +250,17 @@ void MqttManager::publishState(
     doc["control_sensor"] = telemetry.controlSensor;
     doc["beer_probe_present"] = telemetry.beerProbePresent;
     doc["beer_probe_valid"] = telemetry.beerProbeValid;
+    doc["beer_probe_stale"] = telemetry.beerProbeStale;
     doc["beer_probe_rom"] = telemetry.beerProbeRom;
     doc["chamber_probe_present"] = telemetry.chamberProbePresent;
     doc["chamber_probe_valid"] = telemetry.chamberProbeValid;
+    doc["chamber_probe_stale"] = telemetry.chamberProbeStale;
     doc["chamber_probe_rom"] = telemetry.chamberProbeRom;
+    if (!telemetry.fault.isEmpty()) {
+        doc["fault"] = telemetry.fault;
+    } else {
+        doc["fault"] = nullptr;
+    }
     if (telemetry.hasSetpoint) {
         doc["setpoint_c"] = telemetry.setpointC;
     } else {
@@ -307,10 +314,17 @@ void MqttManager::publishTelemetry(
     doc["control_sensor"] = telemetry.controlSensor;
     doc["beer_probe_present"] = telemetry.beerProbePresent;
     doc["beer_probe_valid"] = telemetry.beerProbeValid;
+    doc["beer_probe_stale"] = telemetry.beerProbeStale;
     doc["beer_probe_rom"] = telemetry.beerProbeRom;
     doc["chamber_probe_present"] = telemetry.chamberProbePresent;
     doc["chamber_probe_valid"] = telemetry.chamberProbeValid;
+    doc["chamber_probe_stale"] = telemetry.chamberProbeStale;
     doc["chamber_probe_rom"] = telemetry.chamberProbeRom;
+    if (!telemetry.fault.isEmpty()) {
+        doc["fault"] = telemetry.fault;
+    } else {
+        doc["fault"] = nullptr;
+    }
     doc["heating"] = outputs.heatingState() == OutputState::On;
     doc["cooling"] = outputs.coolingState() == OutputState::On;
 

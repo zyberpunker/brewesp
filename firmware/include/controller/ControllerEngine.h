@@ -23,6 +23,7 @@ public:
         bool hasSecondaryTemp = false;
         float secondaryTempC = 0.0f;
         uint32_t nowMs = 0;
+        String faultReason;
     };
 
     struct Status {
