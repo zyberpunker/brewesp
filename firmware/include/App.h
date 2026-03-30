@@ -36,6 +36,7 @@ private:
     void beginNormalMode();
     void startProvisioningMode(const char* reason);
     void ensureWifiConnected();
+    void updateControlLoop();
     void handleSystemConfig(const SystemConfig& updatedConfig);
     void handleFermentationConfig(const FermentationConfig& updatedConfig);
     void handleOutputCommand(const String& target, OutputState state);

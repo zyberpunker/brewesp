@@ -38,10 +38,9 @@ void App::begin() {
 
     if (config_.wifi.ssid.isEmpty()) {
         startProvisioningMode("missing Wi-Fi config");
-        return;
+    } else {
+        beginNormalMode();
     }
-
-    beginNormalMode();
 }
 
 void App::update() {
@@ -52,20 +51,10 @@ void App::update() {
             delay(1000);
             ESP.restart();
         }
-        return;
     }
 
     ensureWifiConnected();
-    localUi_.update();
-    outputs_.update();
-    sensors_.update(config_);
-    if (isOtaLockoutActive()) {
-        outputs_.setHeating(OutputState::Off);
-        outputs_.setCooling(OutputState::Off);
-        outputs_.refreshStates();
-    } else if (controller_.update(fermentationConfig_, buildControllerInputs(), outputs_)) {
-        mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
-    }
+    updateControlLoop();
     mqtt_.update(config_, outputs_, localUi_, buildTelemetrySnapshot());
     processPendingOtaCommand();
     if (ota_.shouldRunScheduledCheck(config_, millis())) {
@@ -109,6 +98,19 @@ void App::beginNormalMode() {
     WiFi.mode(WIFI_STA);
     ensureWifiConnected();
     mqtt_.begin(config_);
+}
+
+void App::updateControlLoop() {
+    localUi_.update();
+    outputs_.update();
+    sensors_.update(config_);
+    if (isOtaLockoutActive()) {
+        outputs_.setHeating(OutputState::Off);
+        outputs_.setCooling(OutputState::Off);
+        outputs_.refreshStates();
+    } else if (controller_.update(fermentationConfig_, buildControllerInputs(), outputs_)) {
+        mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+    }
 }
 
 void App::handleSystemConfig(const SystemConfig& updatedConfig) {
@@ -474,9 +476,13 @@ void App::runKasaDiscovery() {
 }
 
 void App::startProvisioningMode(const char* reason) {
-    provisioningMode_ = true;
+    if (provisioningMode_ && provisioning_.isActive()) {
+        return;
+    }
+
     Serial.printf("[prov] starting provisioning mode reason=%s\r\n", reason);
-    provisioning_.begin(
+    wifiConnectStartedMs_ = 0;
+    provisioningMode_ = provisioning_.begin(
         config_,
         [this](const SystemConfig& updatedConfig) {
             config_ = updatedConfig;
@@ -485,7 +491,13 @@ void App::startProvisioningMode(const char* reason) {
 }
 
 void App::ensureWifiConnected() {
+    if (config_.wifi.ssid.isEmpty()) {
+        wifiConnectStartedMs_ = 0;
+        return;
+    }
+
     if (WiFi.status() == WL_CONNECTED) {
+        wifiConnectStartedMs_ = 0;
         return;
     }
 
@@ -498,6 +510,10 @@ void App::ensureWifiConnected() {
 
     if (millis() - wifiConnectStartedMs_
         < config_.wifi.recoveryAp.startAfterWifiFailureSeconds * 1000UL) {
+        return;
+    }
+
+    if (provisioningMode_) {
         return;
     }
 
