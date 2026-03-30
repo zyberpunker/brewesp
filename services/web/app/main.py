@@ -39,6 +39,10 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 STALE_AFTER_SECONDS = 90
 OFFLINE_AFTER_SECONDS = 180
+MAX_PROFILE_STEPS = 10
+MAX_PROFILE_TARGET_C = 50.0
+MIN_PROFILE_TARGET_C = -20.0
+MAX_PROFILE_DURATION_S = 3596400
 
 
 def _serialize_heartbeats(heartbeats: list[DeviceHeartbeat]) -> list[dict]:
@@ -60,8 +64,10 @@ def _serialize_telemetry(samples: list[DeviceTelemetry]) -> list[dict]:
             "temp_primary_c": sample.temp_primary_c,
             "temp_secondary_c": sample.temp_secondary_c,
             "setpoint_c": sample.setpoint_c,
+            "effective_target_c": sample.effective_target_c,
             "mode": sample.mode,
             "profile_id": sample.profile_id,
+            "profile_step_id": sample.profile_step_id,
             "heating_active": sample.heating_active,
             "cooling_active": sample.cooling_active,
         }
@@ -103,7 +109,7 @@ def _output_button_state(current_state: str | None, expected: str) -> str:
 def _device_live_payload(device: Device, now: datetime) -> dict:
     device = _apply_display_status(device, now)
     fermentation_config = device.fermentation_config
-    last_payload = device.last_payload or {}
+    state_payload = device.last_payload or {}
     return {
         "device_id": device.device_id,
         "display_status": device.display_status,
@@ -119,17 +125,19 @@ def _device_live_payload(device: Device, now: datetime) -> dict:
         "cooling_on_button_state": _output_button_state(device.cooling_state, "on"),
         "cooling_off_button_state": _output_button_state(device.cooling_state, "off"),
         "last_mode": device.last_mode,
-        "controller_state": last_payload.get("controller_state"),
-        "controller_reason": last_payload.get("controller_reason"),
-        "automatic_control_active": last_payload.get("automatic_control_active"),
-        "beer_probe_present": last_payload.get("beer_probe_present"),
-        "beer_probe_valid": last_payload.get("beer_probe_valid"),
-        "beer_probe_rom": last_payload.get("beer_probe_rom"),
-        "chamber_probe_present": last_payload.get("chamber_probe_present"),
-        "chamber_probe_valid": last_payload.get("chamber_probe_valid"),
-        "chamber_probe_rom": last_payload.get("chamber_probe_rom"),
-        "secondary_sensor_enabled": last_payload.get("secondary_sensor_enabled"),
-        "control_sensor": last_payload.get("control_sensor"),
+        "controller_state": state_payload.get("controller_state"),
+        "controller_reason": state_payload.get("controller_reason"),
+        "automatic_control_active": state_payload.get("automatic_control_active"),
+        "active_config_version": state_payload.get("active_config_version"),
+        "beer_probe_present": state_payload.get("beer_probe_present"),
+        "beer_probe_valid": state_payload.get("beer_probe_valid"),
+        "beer_probe_rom": state_payload.get("beer_probe_rom"),
+        "chamber_probe_present": state_payload.get("chamber_probe_present"),
+        "chamber_probe_valid": state_payload.get("chamber_probe_valid"),
+        "chamber_probe_rom": state_payload.get("chamber_probe_rom"),
+        "secondary_sensor_enabled": state_payload.get("secondary_sensor_enabled"),
+        "control_sensor": state_payload.get("control_sensor"),
+        "profile_runtime": state_payload.get("profile_runtime"),
         "fermentation_config": {
             "desired_version": fermentation_config.desired_version if fermentation_config else None,
             "last_applied_version": fermentation_config.last_applied_version if fermentation_config else None,
@@ -172,8 +180,23 @@ def _build_system_config_payload(device: Device) -> dict:
     }
 
 
-def _build_fermentation_config_payload(device: Device, config: DeviceFermentationConfig) -> dict:
+def _default_profile_plan(config: DeviceFermentationConfig) -> dict:
     return {
+        "id": f"{(config.name or 'fermentation').strip().lower().replace(' ', '-') or 'fermentation'}-plan",
+        "steps": [
+            {
+                "id": "step-1",
+                "label": config.name or "Current target",
+                "target_c": config.setpoint_c,
+                "hold_duration_s": 0,
+                "advance_policy": "manual_release",
+            }
+        ],
+    }
+
+
+def _build_fermentation_config_payload(device: Device, config: DeviceFermentationConfig) -> dict:
+    payload = {
         "schema_version": config.schema_version,
         "version": config.desired_version,
         "device_id": device.device_id,
@@ -195,9 +218,118 @@ def _build_fermentation_config_payload(device: Device, config: DeviceFermentatio
             "control_sensor": config.control_sensor,
         },
         "alarms": {
-            "deviation_c": 2.0,
+            "deviation_c": config.deviation_c,
+            "sensor_stale_s": config.sensor_stale_s,
         },
     }
+    if config.mode == "profile":
+        payload["profile"] = config.profile_plan or _default_profile_plan(config)
+    return payload
+
+
+def _store_profile_payload(config: DeviceFermentationConfig, payload: dict) -> None:
+    config.schema_version = int(payload.get("schema_version", 2))
+    config.desired_version = int(payload.get("version", config.desired_version or 1))
+    config.name = str(payload.get("name", "")).strip() or "Default fermentation"
+    config.mode = str(payload.get("mode", "thermostat")).strip() or "thermostat"
+
+    thermostat = payload.get("thermostat") or {}
+    sensors = payload.get("sensors") or {}
+    alarms = payload.get("alarms") or {}
+
+    config.setpoint_c = float(thermostat.get("setpoint_c", config.setpoint_c))
+    config.hysteresis_c = float(thermostat.get("hysteresis_c", config.hysteresis_c))
+    config.cooling_delay_s = int(thermostat.get("cooling_delay_s", config.cooling_delay_s))
+    config.heating_delay_s = int(thermostat.get("heating_delay_s", config.heating_delay_s))
+    config.primary_offset_c = float(sensors.get("primary_offset_c", config.primary_offset_c))
+    config.secondary_enabled = bool(sensors.get("secondary_enabled", config.secondary_enabled))
+    config.control_sensor = str(sensors.get("control_sensor", config.control_sensor)).strip() or "primary"
+    config.deviation_c = float(alarms.get("deviation_c", config.deviation_c))
+    config.sensor_stale_s = int(alarms.get("sensor_stale_s", config.sensor_stale_s))
+
+    if config.secondary_enabled:
+        config.secondary_offset_c = float(sensors.get("secondary_offset_c", config.secondary_offset_c or 0.0))
+        config.secondary_limit_hysteresis_c = float(
+            sensors.get("secondary_limit_hysteresis_c", config.secondary_limit_hysteresis_c or 1.5)
+        )
+    else:
+        config.secondary_offset_c = None
+        config.secondary_limit_hysteresis_c = None
+        config.control_sensor = "primary"
+
+    if config.mode == "profile":
+        profile = payload.get("profile")
+        config.profile_plan = profile if isinstance(profile, dict) else _default_profile_plan(config)
+    else:
+        config.profile_plan = None
+
+
+def _build_profile_command_payload(command: str, step_id: str | None = None) -> dict:
+    payload: dict = {"command": command, "requested_by": "web", "ts": _utcnow().isoformat()}
+    if step_id:
+        payload["args"] = {"step_id": step_id}
+    return payload
+
+
+def _validate_v2_payload(payload: dict) -> None:
+    if payload.get("schema_version", 2) != 2:
+        raise ValueError("schema_version must be 2")
+    if payload.get("mode") not in {"thermostat", "profile"}:
+        raise ValueError("mode must be thermostat or profile")
+    if not isinstance(payload.get("thermostat"), dict):
+        raise ValueError("thermostat payload is required")
+    if not isinstance(payload.get("sensors"), dict):
+        raise ValueError("sensors payload is required")
+    if not isinstance(payload.get("alarms"), dict):
+        raise ValueError("alarms payload is required")
+    if payload.get("mode") == "profile":
+        profile = payload.get("profile")
+        if not isinstance(profile, dict):
+            raise ValueError("profile payload is required for profile mode")
+        profile_id = str(profile.get("id", "")).strip()
+        if not profile_id:
+            raise ValueError("profile.id is required for profile mode")
+        steps = profile.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("profile must include at least one step")
+        if len(steps) > MAX_PROFILE_STEPS:
+            raise ValueError(f"profile must include 1-{MAX_PROFILE_STEPS} steps")
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise ValueError(f"profile.steps[{index}] must be an object")
+            step_id = str(step.get("id", "")).strip()
+            if not step_id:
+                raise ValueError(f"profile.steps[{index}].id is required")
+            try:
+                target_c = float(step["target_c"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"profile.steps[{index}].target_c must be numeric") from None
+            if target_c < MIN_PROFILE_TARGET_C or target_c > MAX_PROFILE_TARGET_C:
+                raise ValueError(
+                    f"profile.steps[{index}].target_c must be between {MIN_PROFILE_TARGET_C} and {MAX_PROFILE_TARGET_C}"
+                )
+            try:
+                hold_duration_s = int(step["hold_duration_s"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"profile.steps[{index}].hold_duration_s must be an integer") from None
+            if hold_duration_s < 0 or hold_duration_s > MAX_PROFILE_DURATION_S:
+                raise ValueError(
+                    f"profile.steps[{index}].hold_duration_s must be between 0 and {MAX_PROFILE_DURATION_S}"
+                )
+            if "ramp_duration_s" in step:
+                try:
+                    ramp_duration_s = int(step["ramp_duration_s"])
+                except (TypeError, ValueError):
+                    raise ValueError(f"profile.steps[{index}].ramp_duration_s must be an integer") from None
+                if ramp_duration_s < 0 or ramp_duration_s > MAX_PROFILE_DURATION_S:
+                    raise ValueError(
+                        f"profile.steps[{index}].ramp_duration_s must be between 0 and {MAX_PROFILE_DURATION_S}"
+                    )
+            advance_policy = str(step.get("advance_policy", "")).strip()
+            if advance_policy not in {"auto", "manual_release"}:
+                raise ValueError(
+                    f"profile.steps[{index}].advance_policy must be auto or manual_release"
+                )
 
 
 def _upsert_assignment(session, device: Device, role: str, relay: DiscoveredRelay | None) -> None:
@@ -420,10 +552,11 @@ async def update_fermentation(request: Request, device_id: str):
             return HTMLResponse("Device not found", status_code=404)
 
         config = _get_or_create_fermentation_config(session, device)
-        config.schema_version = 1
+        form_mode = str(form.get("mode", "thermostat")).strip() or "thermostat"
+        config.schema_version = 2
         config.desired_version = int(form.get("desired_version", config.desired_version or 1))
         config.name = str(form.get("name", "")).strip() or "Default fermentation"
-        config.mode = str(form.get("mode", "thermostat")).strip() or "thermostat"
+        config.mode = form_mode
         config.setpoint_c = float(form.get("setpoint_c", config.setpoint_c))
         config.hysteresis_c = float(form.get("hysteresis_c", config.hysteresis_c))
         config.cooling_delay_s = int(form.get("cooling_delay_s", config.cooling_delay_s))
@@ -431,6 +564,8 @@ async def update_fermentation(request: Request, device_id: str):
         config.primary_offset_c = float(form.get("primary_offset_c", config.primary_offset_c))
         config.secondary_enabled = form.get("secondary_enabled") == "on"
         config.control_sensor = str(form.get("control_sensor", "primary")).strip() or "primary"
+        config.deviation_c = config.deviation_c or 2.0
+        config.sensor_stale_s = config.sensor_stale_s or 30
         if config.secondary_enabled:
             config.secondary_offset_c = float(form.get("secondary_offset_c", config.secondary_offset_c or 0.0))
             config.secondary_limit_hysteresis_c = float(
@@ -440,6 +575,11 @@ async def update_fermentation(request: Request, device_id: str):
             config.secondary_offset_c = None
             config.secondary_limit_hysteresis_c = None
             config.control_sensor = "primary"
+
+        if config.mode == "profile" and not config.profile_plan:
+            config.profile_plan = _default_profile_plan(config)
+        elif config.mode != "profile":
+            config.profile_plan = None
 
         payload = _build_fermentation_config_payload(device, config)
         session.commit()
@@ -466,3 +606,77 @@ async def command_device(request: Request, device_id: str):
         mqtt_bridge.publish_command(device_id, payload)
 
     return RedirectResponse(url=f"/devices/{device_id}", status_code=303)
+
+
+@app.get("/api/devices/{device_id}/fermentation-plan")
+def fermentation_plan(device_id: str):
+    with SessionLocal() as session:
+        device = session.scalar(
+            select(Device)
+            .options(selectinload(Device.fermentation_config))
+            .where(Device.device_id == device_id)
+        )
+        if device is None:
+            return JSONResponse({"error": "Device not found"}, status_code=404)
+
+        config = _get_or_create_fermentation_config(session, device)
+        return JSONResponse(_build_fermentation_config_payload(device, config))
+
+
+@app.post("/api/devices/{device_id}/fermentation-plan")
+async def update_fermentation_plan(request: Request, device_id: str):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
+
+    try:
+        _validate_v2_payload(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with SessionLocal() as session:
+        device = session.scalar(
+            select(Device)
+            .options(selectinload(Device.fermentation_config))
+            .where(Device.device_id == device_id)
+        )
+        if device is None:
+            return JSONResponse({"error": "Device not found"}, status_code=404)
+
+        config = _get_or_create_fermentation_config(session, device)
+        _store_profile_payload(config, payload)
+        publish_payload = _build_fermentation_config_payload(device, config)
+        session.commit()
+
+    mqtt_bridge.publish_fermentation_config(device_id, publish_payload)
+    return JSONResponse(publish_payload)
+
+
+@app.post("/api/devices/{device_id}/commands/profile")
+async def profile_command(request: Request, device_id: str):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
+
+    command = str(payload.get("command", "")).strip()
+    if command not in {
+        "profile_pause",
+        "profile_resume",
+        "profile_release_hold",
+        "profile_jump_to_step",
+        "profile_stop",
+    }:
+        return JSONResponse({"error": "Unsupported profile command"}, status_code=400)
+
+    step_id = str(payload.get("step_id", "")).strip() or None
+    if command == "profile_jump_to_step" and step_id is None:
+        return JSONResponse({"error": "step_id is required for profile_jump_to_step"}, status_code=400)
+    mqtt_payload = _build_profile_command_payload(command, step_id)
+    mqtt_bridge.publish_command(device_id, mqtt_payload)
+    return JSONResponse(mqtt_payload)

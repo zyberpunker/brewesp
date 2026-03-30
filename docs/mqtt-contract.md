@@ -1,20 +1,20 @@
-# MQTT contract v0
+# MQTT contract v2
 
-This is the first proposed topic and payload design for the controller.
+This document defines the active MQTT topic and payload contract for BrewESP.
 
 The main goal is:
 
 - telemetry and history from ESP32 to the backend
 - desired fermentation configuration from backend to ESP32
 - explicit acknowledgement of what the device actually applied
+- runtime truth for profile progress owned by the ESP32
 
 Important scope note:
 
-- MQTT should carry fermentation/process config
-- bootstrap/system config should not rely exclusively on MQTT
-- physical actuation should remain local to the ESP32 and its selected output
-  backend
-- secondary chamber probe support should be optional and enable-able in config
+- MQTT carries fermentation/process config and runtime coordination
+- bootstrap/system config must not rely exclusively on MQTT
+- physical actuation remains local to the ESP32 and its selected output backend
+- invalid desired config must be rejected without changing relay behavior
 
 ## Topic layout
 
@@ -95,13 +95,14 @@ Payload example:
   "device_id": "fermenter-01",
   "ts": "2026-03-29T14:00:00Z",
   "temp_primary_c": 18.42,
-  "temp_secondary_c": 17.10,
+  "temp_secondary_c": 17.1,
   "temp_beer_c": 18.42,
-  "temp_chamber_c": 17.10,
-  "setpoint_c": 18.50,
+  "temp_chamber_c": 17.1,
+  "setpoint_c": 18.5,
+  "effective_target_c": 18.7,
   "mode": "profile",
   "profile_id": "ale-primary",
-  "profile_step": 2,
+  "profile_step_id": "rise",
   "heating": false,
   "cooling": false,
   "fault": null
@@ -118,6 +119,7 @@ Suggested publish triggers:
 - config applied
 - mode changed
 - fault changed
+- profile runtime state changed
 - every 5 minutes as a state refresh
 
 Payload example:
@@ -126,19 +128,46 @@ Payload example:
 {
   "device_id": "fermenter-01",
   "ts": "2026-03-29T14:00:00Z",
-  "mode": "thermostat",
-  "setpoint_c": 19.0,
+  "mode": "profile",
+  "setpoint_c": 18.5,
   "hysteresis_c": 0.3,
   "cooling_delay_s": 300,
   "heating_delay_s": 120,
   "fw_version": "0.1.0",
   "ota_status": "idle",
   "heating": false,
-  "cooling": true,
+  "cooling": false,
   "active_config_version": 4,
+  "profile_runtime": {
+    "active_profile_id": "ale-primary",
+    "active_step_id": "rise",
+    "active_step_index": 1,
+    "phase": "ramping",
+    "step_started_at": 86400,
+    "step_hold_started_at": null,
+    "effective_target_c": 18.7,
+    "waiting_for_manual_release": false,
+    "paused": false
+  },
   "fault": null
 }
 ```
+
+`profile_runtime` is the runtime truth for an active profile. Frontends should
+use it instead of inferring progress from desired config alone.
+`step_started_at` and `step_hold_started_at` are controller uptime seconds, not
+wall-clock timestamps. `step_hold_started_at` may be `null` until the hold
+phase begins.
+
+Expected `profile_runtime.phase` values:
+
+- `idle`
+- `ramping`
+- `holding`
+- `waiting_manual_release`
+- `paused`
+- `completed`
+- `faulted`
 
 ### `history/raw`
 
@@ -152,12 +181,17 @@ Retained JSON document published by the web service.
 
 This topic is for `fermentation_config`, not full device bootstrap settings.
 
+The active config schema is
+[fermentation-config.schema.json](C:/Users/ola/git/brewesp/docs/schemas/fermentation-config.schema.json).
+
 Payload example:
 
 ```json
 {
+  "schema_version": 2,
   "version": 4,
   "device_id": "fermenter-01",
+  "name": "Ale primary",
   "mode": "profile",
   "thermostat": {
     "setpoint_c": 18.5,
@@ -169,22 +203,57 @@ Payload example:
     "primary_offset_c": 0.0,
     "secondary_enabled": true,
     "secondary_offset_c": -0.2,
-    "secondary_limit_hysteresis_c": 1.5
+    "secondary_limit_hysteresis_c": 1.5,
+    "control_sensor": "primary"
   },
   "alarms": {
-    "deviation_c": 2.0
+    "deviation_c": 2.0,
+    "sensor_stale_s": 30
   },
   "profile": {
     "id": "ale-primary",
-    "ramping": true,
     "steps": [
-      { "target_c": 18.0, "duration_h": 72 },
-      { "target_c": 20.0, "duration_h": 48 },
-      { "target_c": 4.0, "duration_h": 24 }
+      {
+        "id": "pitch",
+        "label": "Pitch",
+        "target_c": 18.0,
+        "hold_duration_s": 259200,
+        "advance_policy": "auto"
+      },
+      {
+        "id": "rise",
+        "label": "Rise to diacetyl rest",
+        "target_c": 20.0,
+        "ramp_duration_s": 43200,
+        "hold_duration_s": 172800,
+        "advance_policy": "auto"
+      },
+      {
+        "id": "cold-crash-ready",
+        "label": "Wait for operator release",
+        "target_c": 20.0,
+        "hold_duration_s": 0,
+        "advance_policy": "manual_release"
+      },
+      {
+        "id": "cold-crash",
+        "label": "Cold crash",
+        "target_c": 4.0,
+        "ramp_duration_s": 86400,
+        "hold_duration_s": 86400,
+        "advance_policy": "auto"
+      }
     ]
   }
 }
 ```
+
+Wire-unit rule:
+
+- `target_c` is always Celsius
+- `hold_duration_s` and `ramp_duration_s` are always integer seconds
+- editors may use friendlier display units, but serialization must stay
+  unambiguous on the wire
 
 ### `config/applied`
 
@@ -212,7 +281,7 @@ If validation fails:
   "requested_version": 4,
   "applied_version": 3,
   "result": "error",
-  "message": "cooling_delay_s must be between 0 and 3600"
+  "message": "profile.steps[1].advance_policy must be auto or manual_release"
 }
 ```
 
@@ -220,25 +289,60 @@ If validation fails:
 
 Imperative actions that should not live inside retained config.
 
+Profile runtime commands:
+
+- `profile_pause`
+- `profile_resume`
+- `profile_release_hold`
+- `profile_jump_to_step`
+- `profile_stop`
+
+Other commands may still exist for operations such as OTA or direct output
+control, but profile runtime commands are the active contract for profile
+execution control.
+
 Examples:
-
-- pause active profile
-- resume active profile
-- stop profile and switch to thermostat
-- check for firmware update
-- start firmware update
-- reboot device
-
-Payload example:
 
 ```json
 {
-  "command": "start_update",
+  "command": "profile_pause",
   "requested_by": "web",
-  "ts": "2026-03-29T14:05:00Z",
+  "ts": "2026-03-29T14:05:00Z"
+}
+```
+
+```json
+{
+  "command": "profile_resume",
+  "requested_by": "web",
+  "ts": "2026-03-29T14:06:00Z"
+}
+```
+
+```json
+{
+  "command": "profile_release_hold",
+  "requested_by": "web",
+  "ts": "2026-03-29T14:07:00Z"
+}
+```
+
+```json
+{
+  "command": "profile_jump_to_step",
+  "requested_by": "web",
+  "ts": "2026-03-29T14:08:00Z",
   "args": {
-    "channel": "stable"
+    "step_id": "cold-crash"
   }
+}
+```
+
+```json
+{
+  "command": "profile_stop",
+  "requested_by": "web",
+  "ts": "2026-03-29T14:09:00Z"
 }
 ```
 
@@ -320,4 +424,5 @@ These rules are important from the start:
 7. `availability` should use MQTT last will for immediate disconnect detection.
 8. `heartbeat` should be lightweight and independent of telemetry/state payload size.
 9. MQTT config topics are for `fermentation_config`, not mandatory bootstrap.
-10. OTA binaries should be transferred over HTTP/HTTPS, not MQTT payloads.
+10. `profile_runtime` is device-owned runtime truth.
+11. OTA binaries should be transferred over HTTP/HTTPS, not MQTT payloads.

@@ -1,9 +1,11 @@
 #include "config/ConfigStore.h"
 
+#include <ArduinoJson.h>
 #include <Preferences.h>
 
 namespace {
 const char* kNamespace = "brewesp";
+constexpr size_t kMaxStoredProfileBytes = 3072;
 
 OutputDriverType outputDriverFromString(const String& value) {
     if (value == "gpio") {
@@ -194,6 +196,31 @@ bool ConfigStore::loadFermentationConfig(FermentationConfig& config) {
     config.sensors.controlSensor =
         prefs.getString("fcfg_ctrl", config.sensors.controlSensor);
 
+    if (prefs.isKey("fcfg_prof")) {
+        const String profileJson = prefs.getString("fcfg_prof", "");
+        DynamicJsonDocument doc(4096);
+        if (deserializeJson(doc, profileJson) == DeserializationError::Ok) {
+            config.profile.id = String(static_cast<const char*>(doc["id"] | ""));
+            config.profile.stepCount = 0;
+            JsonArray steps = doc["steps"].as<JsonArray>();
+            for (JsonObject step : steps) {
+                if (config.profile.stepCount >= kMaxProfileSteps) {
+                    break;
+                }
+
+                ProfileStepConfig& entry = config.profile.steps[config.profile.stepCount++];
+                entry.id = String(static_cast<const char*>(step["id"] | ""));
+                entry.label = String(static_cast<const char*>(step["label"] | ""));
+                entry.targetC = step["target_c"] | entry.targetC;
+                entry.holdDurationSeconds = step["hold_duration_s"] | entry.holdDurationSeconds;
+                entry.rampDurationSeconds = step["ramp_duration_s"] | entry.rampDurationSeconds;
+                entry.advancePolicy = String(static_cast<const char*>(step["advance_policy"] | "auto"));
+            }
+        } else if (config.mode == "profile") {
+            config.mode = "thermostat";
+        }
+    }
+
     prefs.end();
     return true;
 }
@@ -218,6 +245,40 @@ bool ConfigStore::saveFermentationConfig(const FermentationConfig& config) {
     prefs.putFloat("fcfg_s2off", config.sensors.secondaryOffsetC);
     prefs.putFloat("fcfg_s2hy", config.sensors.secondaryLimitHysteresisC);
     prefs.putString("fcfg_ctrl", config.sensors.controlSensor);
+
+    DynamicJsonDocument doc(4096);
+    doc["id"] = config.profile.id;
+    JsonArray steps = doc.createNestedArray("steps");
+    for (uint8_t i = 0; i < config.profile.stepCount; ++i) {
+        const ProfileStepConfig& step = config.profile.steps[i];
+        JsonObject item = steps.createNestedObject();
+        item["id"] = step.id;
+        item["label"] = step.label;
+        item["target_c"] = step.targetC;
+        item["hold_duration_s"] = step.holdDurationSeconds;
+        if (step.rampDurationSeconds > 0) {
+            item["ramp_duration_s"] = step.rampDurationSeconds;
+        }
+        item["advance_policy"] = step.advancePolicy;
+    }
+
+    if (doc.overflowed()) {
+        prefs.end();
+        return false;
+    }
+
+    String profileJson;
+    const size_t serializedLength = serializeJson(doc, profileJson);
+    if (serializedLength == 0 || serializedLength > kMaxStoredProfileBytes) {
+        prefs.end();
+        return false;
+    }
+
+    const size_t storedLength = prefs.putString("fcfg_prof", profileJson);
+    if (storedLength == 0 && !profileJson.isEmpty()) {
+        prefs.end();
+        return false;
+    }
 
     prefs.end();
     return true;

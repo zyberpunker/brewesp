@@ -17,7 +17,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 1
+      "const": 2,
+      "description": "Active fermentation config contract version."
     },
     "version": {
       "type": "integer",
@@ -209,7 +210,6 @@
       "additionalProperties": false,
       "required": [
         "id",
-        "ramping",
         "steps"
       ],
       "properties": {
@@ -218,9 +218,6 @@
           "minLength": 1,
           "maxLength": 64,
           "pattern": "^[a-zA-Z0-9._-]+$"
-        },
-        "ramping": {
-          "type": "boolean"
         },
         "steps": {
           "type": "array",
@@ -236,24 +233,46 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "id",
         "target_c",
-        "duration_h"
+        "hold_duration_s",
+        "advance_policy"
       ],
       "properties": {
-        "target_c": {
-          "type": "number",
-          "minimum": -20,
-          "maximum": 50
-        },
-        "duration_h": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 999
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9._-]+$"
         },
         "label": {
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "target_c": {
+          "type": "number",
+          "minimum": -20,
+          "maximum": 50
+        },
+        "hold_duration_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3596400,
+          "description": "Required hold time in integer seconds. Editors may use friendlier display units, but the wire contract is always seconds."
+        },
+        "ramp_duration_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3596400,
+          "description": "Optional ramp time in integer seconds before the step enters its hold phase."
+        },
+        "advance_policy": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "manual_release"
+          ]
         }
       }
     }

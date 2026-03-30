@@ -12,6 +12,8 @@ void App::begin() {
     configStore_.load(config_);
     fermentationConfig_ = buildDefaultFermentationConfig(config_.deviceId);
     configStore_.loadFermentationConfig(fermentationConfig_);
+    initializeProfileRuntime();
+    mqtt_.setAppliedFermentationVersion(fermentationConfig_.version);
 
     Serial.println();
     Serial.println("brewesp firmware booting");
@@ -22,6 +24,8 @@ void App::begin() {
         [this](const FermentationConfig& updatedConfig) { handleFermentationConfig(updatedConfig); });
     mqtt_.setOutputCommandHandler(
         [this](const String& target, OutputState state) { handleOutputCommand(target, state); });
+    mqtt_.setProfileCommandHandler(
+        [this](const String& command, const String& stepId) { handleProfileCommand(command, stepId); });
     mqtt_.setDiscoveryRequestHandler([this]() { runKasaDiscovery(); });
 
     localUi_.begin(config_);
@@ -93,20 +97,41 @@ void App::handleSystemConfig(const SystemConfig& updatedConfig) {
 }
 
 void App::handleFermentationConfig(const FermentationConfig& updatedConfig) {
+    fermentationConfigRollback_ = fermentationConfig_;
+    profileRuntimeRollback_ = profileRuntime_;
+
     if (updatedConfig.deviceId != config_.deviceId) {
         mqtt_.publishConfigApplied(
             config_,
-            updatedConfig,
+            updatedConfig.version,
+            fermentationConfig_.version,
             "error",
             "device_id mismatch");
         return;
     }
 
     fermentationConfig_ = updatedConfig;
-    configStore_.saveFermentationConfig(fermentationConfig_);
+    initializeProfileRuntime();
+    if (!configStore_.saveFermentationConfig(fermentationConfig_)) {
+        fermentationConfig_ = fermentationConfigRollback_;
+        profileRuntime_ = profileRuntimeRollback_;
+        mqtt_.publishConfigApplied(
+            config_,
+            updatedConfig.version,
+            fermentationConfigRollback_.version,
+            "error",
+            "failed to persist fermentation config");
+        return;
+    }
+
     controller_.reset();
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
-    mqtt_.publishConfigApplied(config_, fermentationConfig_, "ok", nullptr);
+    mqtt_.publishConfigApplied(
+        config_,
+        fermentationConfig_.version,
+        fermentationConfig_.version,
+        "ok",
+        nullptr);
     Serial.printf(
         "[app] applied fermentation config version=%lu mode=%s setpoint=%.2f hysteresis=%.2f\r\n",
         static_cast<unsigned long>(fermentationConfig_.version),
@@ -145,6 +170,64 @@ void App::handleOutputCommand(const String& target, OutputState state) {
     }
 }
 
+void App::handleProfileCommand(const String& command, const String& stepId) {
+    if (fermentationConfig_.mode != "profile" || fermentationConfig_.profile.stepCount == 0) {
+        return;
+    }
+
+    fermentationConfigRollback_ = fermentationConfig_;
+    profileRuntimeRollback_ = profileRuntime_;
+    bool changed = false;
+
+    if (command == "profile_pause") {
+        profileRuntime_.paused = true;
+        profileRuntime_.phase = "paused";
+        changed = true;
+    } else if (command == "profile_resume") {
+        profileRuntime_.paused = false;
+        if (profileRuntime_.waitingForManualRelease) {
+            profileRuntime_.phase = "waiting_manual_release";
+        } else {
+            profileRuntime_.phase = "holding";
+        }
+        changed = true;
+    } else if (command == "profile_release_hold") {
+        if (profileRuntime_.waitingForManualRelease) {
+            const int nextStep = profileRuntime_.activeStepIndex + 1;
+            if (nextStep >= fermentationConfig_.profile.stepCount) {
+                profileRuntime_.waitingForManualRelease = false;
+                profileRuntime_.phase = "completed";
+                changed = true;
+            } else {
+                changed = activateProfileStep(static_cast<uint8_t>(nextStep), true);
+            }
+        }
+    } else if (command == "profile_jump_to_step") {
+        for (uint8_t i = 0; i < fermentationConfig_.profile.stepCount; ++i) {
+            if (fermentationConfig_.profile.steps[i].id == stepId) {
+                changed = activateProfileStep(i, true);
+                break;
+            }
+        }
+    } else if (command == "profile_stop") {
+        fermentationConfig_.mode = "thermostat";
+        resetProfileRuntime();
+        changed = true;
+    }
+
+    if (!changed) {
+        return;
+    }
+
+    if (!configStore_.saveFermentationConfig(fermentationConfig_)) {
+        fermentationConfig_ = fermentationConfigRollback_;
+        profileRuntime_ = profileRuntimeRollback_;
+        return;
+    }
+
+    mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+}
+
 MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     MqttManager::TelemetrySnapshot telemetry;
     const ControllerEngine::Status& controllerStatus = controller_.status();
@@ -156,6 +239,7 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     telemetry.coolingDelaySeconds = fermentationConfig_.thermostat.coolingDelaySeconds;
     telemetry.heatingDelaySeconds = fermentationConfig_.thermostat.heatingDelaySeconds;
     telemetry.mode = fermentationConfig_.mode;
+    telemetry.activeConfigVersion = fermentationConfig_.version;
     telemetry.controllerState = ControllerEngine::stateName(controllerStatus.state);
     telemetry.controllerReason = controllerStatus.reason;
     telemetry.automaticControlActive = controllerStatus.automaticControlActive;
@@ -178,6 +262,19 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     telemetry.chamberProbeValid = chamberProbe.valid;
     if (chamberProbe.present) {
         telemetry.chamberProbeRom = sensors_.chamberProbeRom();
+    }
+    if (profileRuntime_.active) {
+        telemetry.hasProfileRuntime = true;
+        telemetry.profileId = profileRuntime_.activeProfileId;
+        telemetry.profileStepId = profileRuntime_.activeStepId;
+        telemetry.profileStepIndex = profileRuntime_.activeStepIndex;
+        telemetry.profilePhase = profileRuntime_.phase;
+        telemetry.profilePaused = profileRuntime_.paused;
+        telemetry.waitingForManualRelease = profileRuntime_.waitingForManualRelease;
+        telemetry.hasEffectiveTarget = true;
+        telemetry.effectiveTargetC = profileRuntime_.effectiveTargetC;
+        telemetry.stepStartedAtSeconds = profileRuntime_.stepStartedMs / 1000UL;
+        telemetry.stepHoldStartedAtSeconds = profileRuntime_.stepHoldStartedMs / 1000UL;
     }
     return telemetry;
 }
@@ -206,6 +303,7 @@ ControllerEngine::Inputs App::buildControllerInputs() const {
 
 FermentationConfig App::buildDefaultFermentationConfig(const String& deviceId) const {
     FermentationConfig config;
+    config.schemaVersion = 2;
     config.deviceId = deviceId;
     config.name = "Default fermentation";
     config.mode = "thermostat";
@@ -219,6 +317,44 @@ FermentationConfig App::buildDefaultFermentationConfig(const String& deviceId) c
     config.sensors.secondaryLimitHysteresisC = 1.5f;
     config.sensors.controlSensor = "primary";
     return config;
+}
+
+void App::resetProfileRuntime() {
+    profileRuntime_ = ProfileRuntimeState{};
+}
+
+void App::initializeProfileRuntime() {
+    resetProfileRuntime();
+
+    if (fermentationConfig_.mode != "profile" || fermentationConfig_.profile.stepCount == 0) {
+        return;
+    }
+
+    activateProfileStep(0, true);
+}
+
+bool App::activateProfileStep(uint8_t stepIndex, bool treatAsFreshStep) {
+    if (stepIndex >= fermentationConfig_.profile.stepCount) {
+        return false;
+    }
+
+    const ProfileStepConfig& step = fermentationConfig_.profile.steps[stepIndex];
+    profileRuntime_.active = true;
+    profileRuntime_.activeProfileId = fermentationConfig_.profile.id;
+    profileRuntime_.activeStepId = step.id;
+    profileRuntime_.activeStepIndex = stepIndex;
+    profileRuntime_.paused = false;
+    profileRuntime_.waitingForManualRelease = step.advancePolicy == "manual_release";
+    profileRuntime_.phase = profileRuntime_.waitingForManualRelease ? "waiting_manual_release" : "holding";
+    profileRuntime_.effectiveTargetC = step.targetC;
+    if (treatAsFreshStep) {
+        profileRuntime_.stepStartedMs = millis();
+        profileRuntime_.stepHoldStartedMs = millis();
+    }
+
+    fermentationConfig_.mode = "profile";
+    fermentationConfig_.thermostat.setpointC = step.targetC;
+    return true;
 }
 
 void App::runKasaDiscovery() {

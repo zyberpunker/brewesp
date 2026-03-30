@@ -11,6 +11,7 @@
 namespace {
 const char* kFirmwareVersion = "0.1.0-dev";
 constexpr uint32_t kTelemetryIntervalMs = 15000UL;
+constexpr uint16_t kMqttBufferSize = 2048U;
 
 const char* outputStateName(OutputState state) {
     switch (state) {
@@ -54,7 +55,7 @@ OutputState outputStateFromString(const String& value) {
 bool MqttManager::begin(const SystemConfig& config) {
     currentConfig_ = config;
     client_.setServer(config.mqtt.host.c_str(), config.mqtt.port);
-    client_.setBufferSize(1024);
+    client_.setBufferSize(kMqttBufferSize);
     client_.setCallback(
         [this](char* topic, uint8_t* payload, unsigned int length) {
             handleMessage(currentConfig_, topic, payload, length);
@@ -73,10 +74,12 @@ void MqttManager::update(
 
     if (connectIfNeeded(config, outputs, localUi, telemetry)) {
         client_.loop();
+        flushPendingFermentationWork();
         return;
     }
 
     client_.loop();
+    flushPendingFermentationWork();
 
     if (!client_.connected()) {
         return;
@@ -98,6 +101,23 @@ bool MqttManager::isConnected() {
     return client_.connected();
 }
 
+void MqttManager::flushPendingFermentationWork() {
+    if (pendingConfigApplied_.active) {
+        publishConfigApplied(
+            currentConfig_,
+            pendingConfigApplied_.requestedVersion,
+            pendingConfigApplied_.appliedVersion,
+            pendingConfigApplied_.result.c_str(),
+            pendingConfigApplied_.message.c_str());
+        pendingConfigApplied_ = PendingConfigApplied{};
+    }
+
+    if (hasPendingFermentationConfig_ && fermentationConfigHandler_) {
+        hasPendingFermentationConfig_ = false;
+        fermentationConfigHandler_(pendingFermentationConfig_);
+    }
+}
+
 void MqttManager::setSystemConfigHandler(SystemConfigHandler handler) {
     systemConfigHandler_ = handler;
 }
@@ -110,8 +130,16 @@ void MqttManager::setOutputCommandHandler(OutputCommandHandler handler) {
     outputCommandHandler_ = handler;
 }
 
+void MqttManager::setProfileCommandHandler(ProfileCommandHandler handler) {
+    profileCommandHandler_ = handler;
+}
+
 void MqttManager::setDiscoveryRequestHandler(DiscoveryRequestHandler handler) {
     discoveryRequestHandler_ = handler;
+}
+
+void MqttManager::setAppliedFermentationVersion(uint32_t version) {
+    lastAppliedFermentationVersion_ = version;
 }
 
 bool MqttManager::connectIfNeeded(
@@ -196,7 +224,7 @@ void MqttManager::publishState(
     const String heatingDescription = outputs.describeHeating();
     const String coolingDescription = outputs.describeCooling();
 
-    StaticJsonDocument<640> doc;
+    StaticJsonDocument<1024> doc;
     doc["device_id"] = config.deviceId;
     doc["fw_version"] = kFirmwareVersion;
     doc["ui"] = localUi.isHeadless() ? "headless" : "local";
@@ -208,6 +236,7 @@ void MqttManager::publishState(
     doc["controller_state"] = telemetry.controllerState;
     doc["controller_reason"] = telemetry.controllerReason;
     doc["automatic_control_active"] = telemetry.automaticControlActive;
+    doc["active_config_version"] = telemetry.activeConfigVersion;
     doc["secondary_sensor_enabled"] = telemetry.secondarySensorEnabled;
     doc["control_sensor"] = telemetry.controlSensor;
     doc["beer_probe_present"] = telemetry.beerProbePresent;
@@ -224,23 +253,41 @@ void MqttManager::publishState(
     doc["hysteresis_c"] = telemetry.hysteresisC;
     doc["cooling_delay_s"] = telemetry.coolingDelaySeconds;
     doc["heating_delay_s"] = telemetry.heatingDelaySeconds;
+    if (telemetry.hasProfileRuntime) {
+        JsonObject runtime = doc.createNestedObject("profile_runtime");
+        runtime["active_profile_id"] = telemetry.profileId;
+        runtime["active_step_id"] = telemetry.profileStepId;
+        runtime["active_step_index"] = telemetry.profileStepIndex;
+        runtime["phase"] = telemetry.profilePhase;
+        runtime["step_started_at"] = telemetry.stepStartedAtSeconds;
+        runtime["step_hold_started_at"] = telemetry.stepHoldStartedAtSeconds;
+        runtime["effective_target_c"] = telemetry.effectiveTargetC;
+        runtime["waiting_for_manual_release"] = telemetry.waitingForManualRelease;
+        runtime["paused"] = telemetry.profilePaused;
+    }
 
-    char payload[640];
-    serializeJson(doc, payload, sizeof(payload));
-    client_.publish(topicFor(config, "state").c_str(), payload, true);
+    String payload;
+    const size_t payloadLength = serializeJson(doc, payload);
+    if (payloadLength == 0 || payloadLength >= kMqttBufferSize) {
+        Serial.println("[mqtt] state payload too large");
+        return;
+    }
+
+    client_.publish(topicFor(config, "state").c_str(), payload.c_str(), true);
 }
 
 void MqttManager::publishTelemetry(
     const SystemConfig& config,
     const OutputManager& outputs,
     const TelemetrySnapshot& telemetry) {
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<768> doc;
     doc["device_id"] = config.deviceId;
     doc["ts"] = millis() / 1000UL;
     doc["mode"] = telemetry.mode;
     doc["controller_state"] = telemetry.controllerState;
     doc["controller_reason"] = telemetry.controllerReason;
     doc["automatic_control_active"] = telemetry.automaticControlActive;
+    doc["active_config_version"] = telemetry.activeConfigVersion;
     doc["secondary_sensor_enabled"] = telemetry.secondarySensorEnabled;
     doc["control_sensor"] = telemetry.controlSensor;
     doc["beer_probe_present"] = telemetry.beerProbePresent;
@@ -273,10 +320,21 @@ void MqttManager::publishTelemetry(
     if (!telemetry.profileId.isEmpty()) {
         doc["profile_id"] = telemetry.profileId;
     }
+    if (!telemetry.profileStepId.isEmpty()) {
+        doc["profile_step_id"] = telemetry.profileStepId;
+    }
+    if (telemetry.hasEffectiveTarget) {
+        doc["effective_target_c"] = telemetry.effectiveTargetC;
+    }
 
-    char payload[512];
-    serializeJson(doc, payload, sizeof(payload));
-    client_.publish(topicFor(config, "telemetry").c_str(), payload, false);
+    String payload;
+    const size_t payloadLength = serializeJson(doc, payload);
+    if (payloadLength == 0 || payloadLength >= kMqttBufferSize) {
+        Serial.println("[mqtt] telemetry payload too large");
+        return;
+    }
+
+    client_.publish(topicFor(config, "telemetry").c_str(), payload.c_str(), false);
 }
 
 void MqttManager::publishKasaDiscovery(const SystemConfig& config, const String& devicePayload) {
@@ -290,13 +348,14 @@ void MqttManager::publishKasaDiscovery(const SystemConfig& config, const String&
 
 void MqttManager::publishConfigApplied(
     const SystemConfig& config,
-    const FermentationConfig& appliedConfig,
+    uint32_t requestedVersion,
+    uint32_t appliedVersion,
     const char* result,
     const char* message) {
     StaticJsonDocument<384> doc;
     doc["device_id"] = config.deviceId;
-    doc["requested_version"] = appliedConfig.version;
-    doc["applied_version"] = appliedConfig.version;
+    doc["requested_version"] = requestedVersion;
+    doc["applied_version"] = appliedVersion;
     doc["result"] = result;
     if (message != nullptr && message[0] != '\0') {
         doc["message"] = message;
@@ -307,6 +366,9 @@ void MqttManager::publishConfigApplied(
     char payload[384];
     serializeJson(doc, payload, sizeof(payload));
     client_.publish(topicFor(config, "config/applied").c_str(), payload, false);
+    if (strcmp(result, "ok") == 0) {
+        lastAppliedFermentationVersion_ = appliedVersion;
+    }
 }
 
 void MqttManager::handleMessage(
@@ -382,7 +444,7 @@ void MqttManager::handleFermentationConfig(const String& payload) {
 
     Serial.printf("[mqtt] fermentation config received bytes=%u\r\n", payload.length());
 
-    StaticJsonDocument<1024> doc;
+    DynamicJsonDocument doc(4096);
     const DeserializationError error = deserializeJson(doc, payload);
     if (error) {
         Serial.printf("[mqtt] invalid fermentation config json error=%s\r\n", error.c_str());
@@ -396,8 +458,14 @@ void MqttManager::handleFermentationConfig(const String& payload) {
     JsonObject thermostat = doc["thermostat"];
     JsonObject sensors = doc["sensors"];
 
-    if (schemaVersion != 1 || version == 0 || deviceId.isEmpty() || thermostat.isNull() || sensors.isNull()) {
+    JsonObject profile = doc["profile"];
+    if (schemaVersion != 2 || version == 0 || deviceId.isEmpty() || thermostat.isNull() || sensors.isNull()) {
         Serial.println("[mqtt] fermentation config missing required fields");
+        pendingConfigApplied_.active = true;
+        pendingConfigApplied_.requestedVersion = version;
+        pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
+        pendingConfigApplied_.result = "error";
+        pendingConfigApplied_.message = "missing required fields";
         return;
     }
 
@@ -421,6 +489,11 @@ void MqttManager::handleFermentationConfig(const String& payload) {
         || (controlSensor == "secondary" && !secondaryEnabled)
         || (mode != "thermostat" && mode != "profile")) {
         Serial.println("[mqtt] fermentation config validation failed");
+        pendingConfigApplied_.active = true;
+        pendingConfigApplied_.requestedVersion = version;
+        pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
+        pendingConfigApplied_.result = "error";
+        pendingConfigApplied_.message = "thermostat or sensor validation failed";
         return;
     }
 
@@ -440,7 +513,65 @@ void MqttManager::handleFermentationConfig(const String& payload) {
     updated.sensors.secondaryLimitHysteresisC =
         secondaryEnabled ? secondaryLimitHysteresisC : 1.5f;
     updated.sensors.controlSensor = controlSensor;
-    fermentationConfigHandler_(updated);
+
+    if (mode == "profile") {
+        if (profile.isNull()) {
+            pendingConfigApplied_.active = true;
+            pendingConfigApplied_.requestedVersion = version;
+            pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
+            pendingConfigApplied_.result = "error";
+            pendingConfigApplied_.message = "profile payload required for profile mode";
+            return;
+        }
+
+        updated.profile.id = String(static_cast<const char*>(profile["id"] | ""));
+        JsonArray steps = profile["steps"].as<JsonArray>();
+        if (updated.profile.id.isEmpty() || steps.isNull() || steps.size() == 0 || steps.size() > kMaxProfileSteps) {
+            pendingConfigApplied_.active = true;
+            pendingConfigApplied_.requestedVersion = version;
+            pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
+            pendingConfigApplied_.result = "error";
+            pendingConfigApplied_.message = "profile must include 1-10 steps";
+            return;
+        }
+
+        updated.profile.stepCount = 0;
+        for (JsonObject step : steps) {
+            const String stepId = String(static_cast<const char*>(step["id"] | ""));
+            const String stepLabel = String(static_cast<const char*>(step["label"] | ""));
+            const float targetC = step["target_c"] | NAN;
+            const uint32_t holdDurationSeconds = step["hold_duration_s"] | UINT32_MAX;
+            const uint32_t rampDurationSeconds = step["ramp_duration_s"] | 0;
+            const String advancePolicy = String(static_cast<const char*>(step["advance_policy"] | ""));
+
+            if (
+                stepId.isEmpty() || isnan(targetC) || targetC < -20.0f || targetC > 50.0f
+                || holdDurationSeconds > 3596400UL || rampDurationSeconds > 3596400UL
+                || (advancePolicy != "auto" && advancePolicy != "manual_release")) {
+                pendingConfigApplied_.active = true;
+                pendingConfigApplied_.requestedVersion = version;
+                pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
+                pendingConfigApplied_.result = "error";
+                pendingConfigApplied_.message = "profile step validation failed";
+                return;
+            }
+
+            ProfileStepConfig& entry = updated.profile.steps[updated.profile.stepCount++];
+            entry.id = stepId;
+            entry.label = stepLabel;
+            entry.targetC = targetC;
+            entry.holdDurationSeconds = holdDurationSeconds;
+            entry.rampDurationSeconds = rampDurationSeconds;
+            entry.advancePolicy = advancePolicy;
+        }
+    }
+
+    Serial.printf(
+        "[mqtt] fermentation config validated version=%lu mode=%s\r\n",
+        static_cast<unsigned long>(version),
+        updated.mode.c_str());
+    pendingFermentationConfig_ = updated;
+    hasPendingFermentationConfig_ = true;
 }
 
 void MqttManager::handleCommand(const String& payload) {
@@ -463,6 +594,18 @@ void MqttManager::handleCommand(const String& payload) {
         const String target = String(static_cast<const char*>(doc["target"] | ""));
         const String state = String(static_cast<const char*>(doc["state"] | ""));
         outputCommandHandler_(target, outputStateFromString(state));
+        return;
+    }
+
+    if (profileCommandHandler_ && (
+        command == "profile_pause" || command == "profile_resume" || command == "profile_release_hold"
+        || command == "profile_jump_to_step" || command == "profile_stop")) {
+        String stepId;
+        JsonObject args = doc["args"];
+        if (!args.isNull()) {
+            stepId = String(static_cast<const char*>(args["step_id"] | ""));
+        }
+        profileCommandHandler_(command, stepId);
     }
 }
 
