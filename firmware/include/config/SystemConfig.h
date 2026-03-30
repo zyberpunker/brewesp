@@ -82,6 +82,16 @@ struct SensorBusConfig {
     String chamberProbeRom;
 };
 
+struct OtaConfig {
+    bool enabled = true;
+    String channel = "stable";
+    String checkStrategy = "manual";
+    uint32_t checkIntervalSeconds = 86400;
+    String manifestUrl;
+    String caCertFingerprint;
+    bool allowHttp = false;
+};
+
 struct SystemConfig {
     String deviceId = "brewesp-dev";
     WifiConfig wifi;
@@ -93,4 +103,5 @@ struct SystemConfig {
     ButtonsConfig buttons;
     OutputConfig heatingOutput;
     OutputConfig coolingOutput;
+    OtaConfig ota;
 };

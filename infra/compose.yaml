@@ -41,11 +41,18 @@ services:
       BREWESP_MQTT_USERNAME: ${BREWESP_MQTT_USERNAME:-}
       BREWESP_MQTT_PASSWORD: ${BREWESP_MQTT_PASSWORD:-}
       BREWESP_MQTT_TOPIC_PREFIX: ${BREWESP_MQTT_TOPIC_PREFIX:-brewesp}
+      BREWESP_FIRMWARE_DIR: /app/firmware-files
+      BREWESP_FIRMWARE_CHANNEL: ${BREWESP_FIRMWARE_CHANNEL:-stable}
+      BREWESP_FIRMWARE_FILENAME: ${BREWESP_FIRMWARE_FILENAME:-firmware.bin}
+      BREWESP_FIRMWARE_VERSION: ${BREWESP_FIRMWARE_VERSION:-0.1.0-dev}
+      BREWESP_FIRMWARE_MIN_SCHEMA_VERSION: "${BREWESP_FIRMWARE_MIN_SCHEMA_VERSION:-1}"
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8000:8000"
+    volumes:
+      - ../firmware/.pio/build/esp32dev:/app/firmware-files:ro
     restart: unless-stopped
 
 volumes:

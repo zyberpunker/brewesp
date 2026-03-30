@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from hashlib import sha256
+from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, select
@@ -39,6 +41,24 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 STALE_AFTER_SECONDS = 90
 OFFLINE_AFTER_SECONDS = 180
+
+
+def _firmware_file_path(filename: str | None = None) -> Path:
+    return settings.firmware_dir / (filename or settings.firmware_filename)
+
+
+def _firmware_download_url(request: Request, filename: str) -> str:
+    if settings.firmware_base_url:
+        return f"{settings.firmware_base_url.rstrip('/')}/firmware/files/{filename}"
+    return str(request.url_for("firmware_file", filename=filename))
+
+
+def _firmware_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _serialize_heartbeats(heartbeats: list[DeviceHeartbeat]) -> list[dict]:
@@ -466,3 +486,37 @@ async def command_device(request: Request, device_id: str):
         mqtt_bridge.publish_command(device_id, payload)
 
     return RedirectResponse(url=f"/devices/{device_id}", status_code=303)
+
+
+@app.get("/firmware/manifest/{channel}.json")
+def firmware_manifest(request: Request, channel: str):
+    if channel != settings.firmware_channel:
+        raise HTTPException(status_code=404, detail="Firmware channel not found")
+
+    firmware_path = _firmware_file_path()
+    if not firmware_path.is_file():
+        raise HTTPException(status_code=404, detail="Firmware binary not available")
+
+    published_at = datetime.fromtimestamp(firmware_path.stat().st_mtime, tz=timezone.utc)
+    return JSONResponse(
+        {
+            "version": settings.firmware_version,
+            "channel": settings.firmware_channel,
+            "published_at": published_at.isoformat(),
+            "min_schema_version": settings.firmware_min_schema_version,
+            "sha256": _firmware_sha256(firmware_path),
+            "download_url": _firmware_download_url(request, firmware_path.name),
+        }
+    )
+
+
+@app.get("/firmware/files/{filename}", name="firmware_file")
+def firmware_file(filename: str):
+    if Path(filename).name != filename:
+        raise HTTPException(status_code=400, detail="Invalid firmware filename")
+
+    file_path = _firmware_file_path(filename)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Firmware file not found")
+
+    return FileResponse(file_path, media_type="application/octet-stream", filename=filename)

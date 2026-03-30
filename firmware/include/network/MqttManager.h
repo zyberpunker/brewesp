@@ -37,12 +37,20 @@ public:
         bool chamberProbeValid = false;
         String chamberProbeRom;
         String profileId;
+        String otaStatus = "idle";
+        String otaMessage;
+        String otaChannel = "stable";
+        String otaTargetVersion;
+        bool otaUpdateAvailable = false;
+        uint8_t otaProgressPercent = 0;
+        bool otaRebootPending = false;
     };
 
     using SystemConfigHandler = std::function<void(const SystemConfig&)>;
     using FermentationConfigHandler = std::function<void(const FermentationConfig&)>;
     using OutputCommandHandler = std::function<void(const String&, OutputState)>;
     using DiscoveryRequestHandler = std::function<void()>;
+    using OtaCommandHandler = std::function<void(const String&, const String&)>;
 
     bool begin(const SystemConfig& config);
     void update(
@@ -55,6 +63,7 @@ public:
     void setFermentationConfigHandler(FermentationConfigHandler handler);
     void setOutputCommandHandler(OutputCommandHandler handler);
     void setDiscoveryRequestHandler(DiscoveryRequestHandler handler);
+    void setOtaCommandHandler(OtaCommandHandler handler);
     void publishState(
         const SystemConfig& config,
         const OutputManager& outputs,
@@ -66,6 +75,12 @@ public:
         const char* result,
         const char* message);
     void publishKasaDiscovery(const SystemConfig& config, const String& devicePayload);
+    void publishEvent(
+        const SystemConfig& config,
+        const char* eventName,
+        const char* result,
+        const char* message,
+        const TelemetrySnapshot& telemetry);
 
 private:
     bool connectIfNeeded(
@@ -98,4 +113,5 @@ private:
     FermentationConfigHandler fermentationConfigHandler_;
     OutputCommandHandler outputCommandHandler_;
     DiscoveryRequestHandler discoveryRequestHandler_;
+    OtaCommandHandler otaCommandHandler_;
 };
