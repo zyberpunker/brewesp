@@ -106,6 +106,8 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 - check firmware manifest over HTTP/HTTPS
 - download new firmware image over Wi-Fi
 - validate version/channel before install
+- require a configured TLS certificate fingerprint for HTTPS
+- allow plain HTTP only when explicitly enabled in `system_config`
 - perform OTA update and reboot
 - report progress and result through state/event topics
 
@@ -149,8 +151,8 @@ Planned services:
 - `mqtt`: Eclipse Mosquitto broker
 - `web`: FastAPI application
 - `db`: PostgreSQL database
-- `firmware-files`: firmware manifest and binary hosting, either inside `web` or
-  as static files behind a reverse proxy
+- `firmware-files`: firmware manifest and binary hosting, currently mounted into
+  `web` from the local PlatformIO build output
 
 Later optional services:
 
@@ -274,6 +276,16 @@ Recommended OTA flow:
 3. ESP32 downloads firmware directly over HTTP/HTTPS.
 4. ESP32 installs update into OTA partition, reboots, and reports result.
 
+Current implementation details:
+
+- firmware uses a dedicated OTA partition table via `firmware/partitions_ota.csv`
+- web serves manifest JSON from `/firmware/manifest/<channel>.json`
+- web serves binaries from `/firmware/files/<filename>`
+- Docker Compose mounts `firmware/.pio/build/esp32dev` into the web container as
+  the firmware file source
+- scheduled OTA checks can run locally from saved config and do not require MQTT
+  to be connected
+
 Why not distribute firmware over MQTT:
 
 - firmware binaries are too large for MQTT to be the primary transport
@@ -284,7 +296,8 @@ Recommended control split:
 
 - MQTT triggers `check_update` or `start_update`
 - HTTP/HTTPS transfers the manifest and `.bin`
-- state/event topics expose version, in-progress status, and errors
+- state/event topics expose version, OTA availability, reboot-pending state, and
+  result/error messages
 
 Suggested firmware manifest fields:
 
@@ -294,6 +307,11 @@ Suggested firmware manifest fields:
 - `min_schema_version`
 - `sha256`
 - `download_url`
+
+Current OTA policy:
+
+- HTTPS OTA requires `ota.ca_cert_fingerprint`
+- HTTP OTA is blocked unless `ota.allow_http` is `true`
 
 ## Output backend model
 

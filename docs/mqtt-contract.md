@@ -128,6 +128,7 @@ Payload example:
 {
   "device_id": "fermenter-01",
   "ts": "2026-03-29T14:00:00Z",
+  "ui": "headless",
   "mode": "profile",
   "setpoint_c": 18.5,
   "hysteresis_c": 0.3,
@@ -135,9 +136,26 @@ Payload example:
   "heating_delay_s": 120,
   "fw_version": "0.1.0",
   "ota_status": "idle",
-  "heating": false,
-  "cooling": false,
+  "ota_channel": "stable",
+  "ota_available": false,
+  "ota_progress_pct": 0,
+  "ota_reboot_pending": false,
+  "heating": "off",
+  "cooling": "off",
+  "heating_desc": "gpio 25 off",
+  "cooling_desc": "kasa 192.168.1.88 off",
+  "controller_state": "holding",
+  "controller_reason": "profile_step_active",
+  "automatic_control_active": true,
   "active_config_version": 4,
+  "secondary_sensor_enabled": false,
+  "control_sensor": "primary",
+  "beer_probe_present": true,
+  "beer_probe_valid": true,
+  "beer_probe_rom": "28ff112233445566",
+  "chamber_probe_present": true,
+  "chamber_probe_valid": true,
+  "chamber_probe_rom": "28ffaa9988776655",
   "profile_runtime": {
     "active_profile_id": "ale-primary",
     "active_step_id": "rise",
@@ -152,6 +170,14 @@ Payload example:
   "fault": null
 }
 ```
+
+Additional OTA fields:
+
+- `ota_target_version` is included when a manifest check found a newer image
+- `ota_message` is included when firmware has a useful human-readable OTA result
+- `ota_progress_pct` is currently coarse-grained; the current firmware reports `100`
+  when the new image is staged and reboot is pending, otherwise `0`
+- `heating` and `cooling` in `state` are string enums: `on`, `off`, or `unknown`
 
 `profile_runtime` is the runtime truth for an active profile. Frontends should
 use it instead of inferring progress from desired config alone.
@@ -289,17 +315,20 @@ If validation fails:
 
 Imperative actions that should not live inside retained config.
 
-Profile runtime commands:
+Supported commands:
 
 - `profile_pause`
 - `profile_resume`
 - `profile_release_hold`
 - `profile_jump_to_step`
 - `profile_stop`
+- `check_update`
+- `start_update`
 
-Other commands may still exist for operations such as OTA or direct output
-control, but profile runtime commands are the active contract for profile
-execution control.
+Profile runtime commands are the active contract for profile execution control.
+For OTA commands, the requested channel may be provided either as
+`args.channel` or as a top-level `channel`. Firmware prefers `args.channel`
+when both are present.
 
 Examples:
 
@@ -397,19 +426,41 @@ Recommended model:
 - ESP32 fetches a firmware manifest over HTTP/HTTPS
 - ESP32 downloads the `.bin` over HTTP/HTTPS
 - ESP32 reports progress and final status on `state` and `event`
+- scheduled checks may also run locally from saved OTA config
+- HTTPS OTA requires `ca_cert_fingerprint`
+- plain HTTP OTA requires `allow_http = true`
 
 Example event payload:
 
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:06:00Z",
+  "ts": 1743343560,
   "event": "ota_update_completed",
   "fw_version": "0.2.0",
+  "ota_status": "rebooting",
+  "target_version": "0.2.0",
   "result": "ok",
   "message": null
 }
 ```
+
+OTA-related events currently emitted by firmware:
+
+- `ota_check_completed`
+- `ota_update_completed`
+
+For `ota_check_completed`, `result` is one of:
+
+- `update_available`
+- `no_update`
+- `error`
+
+For `ota_update_completed`, `result` is one of:
+
+- `ok`
+- `no_update`
+- `error`
 
 ## Contract rules
 

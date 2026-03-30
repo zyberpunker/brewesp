@@ -48,6 +48,13 @@ public:
         uint32_t activeConfigVersion = 0;
         uint32_t stepStartedAtSeconds = 0;
         uint32_t stepHoldStartedAtSeconds = 0;
+        String otaStatus = "idle";
+        String otaMessage;
+        String otaChannel = "stable";
+        String otaTargetVersion;
+        bool otaUpdateAvailable = false;
+        uint8_t otaProgressPercent = 0;
+        bool otaRebootPending = false;
     };
 
     using SystemConfigHandler = std::function<void(const SystemConfig&)>;
@@ -55,6 +62,7 @@ public:
     using OutputCommandHandler = std::function<void(const String&, OutputState)>;
     using ProfileCommandHandler = std::function<void(const String&, const String&)>;
     using DiscoveryRequestHandler = std::function<void()>;
+    using OtaCommandHandler = std::function<void(const String&, const String&)>;
 
     bool begin(const SystemConfig& config);
     void update(
@@ -69,6 +77,7 @@ public:
     void setProfileCommandHandler(ProfileCommandHandler handler);
     void setDiscoveryRequestHandler(DiscoveryRequestHandler handler);
     void setAppliedFermentationVersion(uint32_t version);
+    void setOtaCommandHandler(OtaCommandHandler handler);
     void publishState(
         const SystemConfig& config,
         const OutputManager& outputs,
@@ -81,6 +90,12 @@ public:
         const char* result,
         const char* message);
     void publishKasaDiscovery(const SystemConfig& config, const String& devicePayload);
+    void publishEvent(
+        const SystemConfig& config,
+        const char* eventName,
+        const char* result,
+        const char* message,
+        const TelemetrySnapshot& telemetry);
 
 private:
     struct PendingConfigApplied {
@@ -123,6 +138,7 @@ private:
     OutputCommandHandler outputCommandHandler_;
     ProfileCommandHandler profileCommandHandler_;
     DiscoveryRequestHandler discoveryRequestHandler_;
+    OtaCommandHandler otaCommandHandler_;
     uint32_t lastAppliedFermentationVersion_ = 0;
     bool hasPendingFermentationConfig_ = false;
     FermentationConfig pendingFermentationConfig_;

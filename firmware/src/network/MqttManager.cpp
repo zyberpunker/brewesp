@@ -5,11 +5,11 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 
+#include "config/FirmwareVersion.h"
 #include "output/OutputManager.h"
 #include "ui/LocalUiManager.h"
 
 namespace {
-const char* kFirmwareVersion = "0.1.0-dev";
 constexpr uint32_t kTelemetryIntervalMs = 15000UL;
 constexpr uint16_t kMqttBufferSize = 2048U;
 
@@ -142,6 +142,10 @@ void MqttManager::setAppliedFermentationVersion(uint32_t version) {
     lastAppliedFermentationVersion_ = version;
 }
 
+void MqttManager::setOtaCommandHandler(OtaCommandHandler handler) {
+    otaCommandHandler_ = handler;
+}
+
 bool MqttManager::connectIfNeeded(
     const SystemConfig& config,
     const OutputManager& outputs,
@@ -190,7 +194,7 @@ bool MqttManager::connectIfNeeded(
 void MqttManager::publishAvailability(const SystemConfig& config, const char* status) {
     const String payload =
         "{\"device_id\":\"" + config.deviceId + "\",\"status\":\"" + status
-        + "\",\"fw_version\":\"" + kFirmwareVersion + "\"}";
+        + "\",\"fw_version\":\"" + FirmwareVersion::kCurrent + "\"}";
     client_.publish(topicFor(config, "availability").c_str(), payload.c_str(), true);
 }
 
@@ -224,15 +228,20 @@ void MqttManager::publishState(
     const String heatingDescription = outputs.describeHeating();
     const String coolingDescription = outputs.describeCooling();
 
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<1280> doc;
     doc["device_id"] = config.deviceId;
-    doc["fw_version"] = kFirmwareVersion;
+    doc["fw_version"] = FirmwareVersion::kCurrent;
     doc["ui"] = localUi.isHeadless() ? "headless" : "local";
     doc["mode"] = telemetry.mode;
     doc["heating"] = outputStateName(outputs.heatingState());
     doc["cooling"] = outputStateName(outputs.coolingState());
     doc["heating_desc"] = heatingDescription;
     doc["cooling_desc"] = coolingDescription;
+    doc["ota_status"] = telemetry.otaStatus;
+    doc["ota_channel"] = telemetry.otaChannel;
+    doc["ota_available"] = telemetry.otaUpdateAvailable;
+    doc["ota_progress_pct"] = telemetry.otaProgressPercent;
+    doc["ota_reboot_pending"] = telemetry.otaRebootPending;
     doc["controller_state"] = telemetry.controllerState;
     doc["controller_reason"] = telemetry.controllerReason;
     doc["automatic_control_active"] = telemetry.automaticControlActive;
@@ -264,6 +273,12 @@ void MqttManager::publishState(
         runtime["effective_target_c"] = telemetry.effectiveTargetC;
         runtime["waiting_for_manual_release"] = telemetry.waitingForManualRelease;
         runtime["paused"] = telemetry.profilePaused;
+    }
+    if (!telemetry.otaTargetVersion.isEmpty()) {
+        doc["ota_target_version"] = telemetry.otaTargetVersion;
+    }
+    if (!telemetry.otaMessage.isEmpty()) {
+        doc["ota_message"] = telemetry.otaMessage;
     }
 
     String payload;
@@ -344,6 +359,37 @@ void MqttManager::publishKasaDiscovery(const SystemConfig& config, const String&
 
     const String payload = "{\"device_id\":\"" + config.deviceId + "\",\"result\":" + devicePayload + "}";
     client_.publish(topicFor(config, "discovery/kasa").c_str(), payload.c_str(), false);
+}
+
+void MqttManager::publishEvent(
+    const SystemConfig& config,
+    const char* eventName,
+    const char* result,
+    const char* message,
+    const TelemetrySnapshot& telemetry) {
+    if (!client_.connected()) {
+        return;
+    }
+
+    StaticJsonDocument<384> doc;
+    doc["device_id"] = config.deviceId;
+    doc["ts"] = millis() / 1000UL;
+    doc["event"] = eventName;
+    doc["fw_version"] = FirmwareVersion::kCurrent;
+    doc["result"] = result;
+    doc["ota_status"] = telemetry.otaStatus;
+    if (!telemetry.otaTargetVersion.isEmpty()) {
+        doc["target_version"] = telemetry.otaTargetVersion;
+    }
+    if (message != nullptr && message[0] != '\0') {
+        doc["message"] = message;
+    } else {
+        doc["message"] = nullptr;
+    }
+
+    char payload[384];
+    serializeJson(doc, payload, sizeof(payload));
+    client_.publish(topicFor(config, "event").c_str(), payload, false);
 }
 
 void MqttManager::publishConfigApplied(
@@ -431,6 +477,22 @@ void MqttManager::handleSystemConfig(const SystemConfig& currentConfig, const St
 
     if (doc.containsKey("heartbeat_interval_s")) {
         updated.heartbeat.intervalSeconds = doc["heartbeat_interval_s"] | updated.heartbeat.intervalSeconds;
+    }
+
+    JsonObject ota = doc["ota"];
+    if (!ota.isNull()) {
+        updated.ota.enabled = ota["enabled"] | updated.ota.enabled;
+        updated.ota.channel =
+            String(static_cast<const char*>(ota["channel"] | updated.ota.channel.c_str()));
+        updated.ota.checkStrategy = String(
+            static_cast<const char*>(ota["check_strategy"] | updated.ota.checkStrategy.c_str()));
+        updated.ota.checkIntervalSeconds =
+            ota["check_interval_s"] | updated.ota.checkIntervalSeconds;
+        updated.ota.manifestUrl = String(
+            static_cast<const char*>(ota["manifest_url"] | updated.ota.manifestUrl.c_str()));
+        updated.ota.caCertFingerprint = String(
+            static_cast<const char*>(ota["ca_cert_fingerprint"] | updated.ota.caCertFingerprint.c_str()));
+        updated.ota.allowHttp = ota["allow_http"] | updated.ota.allowHttp;
     }
 
     currentConfig_ = updated;
@@ -606,6 +668,15 @@ void MqttManager::handleCommand(const String& payload) {
             stepId = String(static_cast<const char*>(args["step_id"] | ""));
         }
         profileCommandHandler_(command, stepId);
+        return;
+    }
+
+    if ((command == "check_update" || command == "start_update") && otaCommandHandler_) {
+        JsonObject args = doc["args"];
+        const String channel = args.isNull()
+            ? String(static_cast<const char*>(doc["channel"] | ""))
+            : String(static_cast<const char*>(args["channel"] | ""));
+        otaCommandHandler_(command, channel);
     }
 }
 

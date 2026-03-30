@@ -76,11 +76,12 @@ Build the first vertical slice:
 - web service publishes retained config JSON
 - firmware applies setpoint/hysteresis from MQTT config
 
-After that, add OTA:
+OTA is now wired in the repo:
 
-- web service hosts firmware manifest and `.bin`
-- MQTT command triggers update checks
-- ESP32 downloads and applies firmware over Wi-Fi
+- web service exposes a firmware manifest and serves the mounted firmware `.bin`
+- MQTT commands trigger update checks or update start
+- ESP32 downloads and applies firmware over Wi-Fi using OTA partitions
+- HTTPS OTA requires a configured certificate fingerprint; plain HTTP must be explicitly allowed
 
 ## Recovery AP defaults
 

@@ -144,6 +144,13 @@ void ProvisioningManager::handleSave() {
     updated.localUi.enabled = server_.hasArg("local_ui_enabled");
     updated.display.enabled = server_.hasArg("display_enabled");
     updated.buttons.enabled = server_.hasArg("buttons_enabled");
+    updated.ota.enabled = server_.hasArg("ota_enabled");
+    updated.ota.channel = server_.arg("ota_channel");
+    updated.ota.checkStrategy = server_.arg("ota_check_strategy");
+    updated.ota.checkIntervalSeconds = static_cast<uint32_t>(server_.arg("ota_check_interval_s").toInt());
+    updated.ota.manifestUrl = server_.arg("ota_manifest_url");
+    updated.ota.caCertFingerprint = server_.arg("ota_ca_cert_fingerprint");
+    updated.ota.allowHttp = server_.hasArg("ota_allow_http");
 
     if (updated.mqtt.port == 0) {
         updated.mqtt.port = 1883;
@@ -155,6 +162,15 @@ void ProvisioningManager::handleSave() {
     if (updated.coolingOutput.port == 0) {
         updated.coolingOutput.port =
             updated.coolingOutput.driver == OutputDriverType::KasaLocal ? 9999 : 80;
+    }
+    if (updated.ota.channel.isEmpty()) {
+        updated.ota.channel = "stable";
+    }
+    if (updated.ota.checkStrategy.isEmpty()) {
+        updated.ota.checkStrategy = "manual";
+    }
+    if (updated.ota.checkIntervalSeconds == 0) {
+        updated.ota.checkIntervalSeconds = 86400;
     }
 
     const bool saved = onSave_ && onSave_(updated);
@@ -172,7 +188,7 @@ void ProvisioningManager::handleSave() {
 
 String ProvisioningManager::buildHtmlPage() const {
     String page;
-    page.reserve(4096);
+    page.reserve(6144);
     page += "<!doctype html><html><head><meta charset='utf-8'><title>brewesp setup</title>";
     page += "<style>body{font-family:sans-serif;max-width:820px;margin:2rem auto;padding:0 1rem;}label{display:block;margin-top:1rem;}input,select{width:100%;padding:.45rem;}fieldset{margin-top:1rem;}button{margin-top:1rem;padding:.7rem 1rem;}</style>";
     page += "</head><body><h1>brewesp setup</h1>";
@@ -241,6 +257,42 @@ String ProvisioningManager::buildHtmlPage() const {
         page += "checked";
     }
     page += "> Buttons connected</label>";
+    page += "</fieldset>";
+
+    page += "<fieldset><legend>OTA</legend>";
+    page += "<label><input type='checkbox' name='ota_enabled' ";
+    if (currentConfig_.ota.enabled) {
+        page += "checked";
+    }
+    page += "> Enable OTA updates</label>";
+    page += "<label>Manifest URL<input name='ota_manifest_url' value='" + htmlEscape(currentConfig_.ota.manifestUrl) + "'></label>";
+    page += "<label>Channel<select name='ota_channel'>";
+    for (const char* option : {"stable", "beta"}) {
+        page += "<option value='" + String(option) + "'";
+        if (currentConfig_.ota.channel == option) {
+            page += " selected";
+        }
+        page += ">" + String(option) + "</option>";
+    }
+    page += "</select></label>";
+    page += "<label>Check strategy<select name='ota_check_strategy'>";
+    for (const char* option : {"manual", "scheduled"}) {
+        page += "<option value='" + String(option) + "'";
+        if (currentConfig_.ota.checkStrategy == option) {
+            page += " selected";
+        }
+        page += ">" + String(option) + "</option>";
+    }
+    page += "</select></label>";
+    page += "<label>Check interval (seconds)<input name='ota_check_interval_s' type='number' value='"
+            + String(currentConfig_.ota.checkIntervalSeconds) + "'></label>";
+    page += "<label>TLS certificate fingerprint<input name='ota_ca_cert_fingerprint' value='"
+            + htmlEscape(currentConfig_.ota.caCertFingerprint) + "'></label>";
+    page += "<label><input type='checkbox' name='ota_allow_http' ";
+    if (currentConfig_.ota.allowHttp) {
+        page += "checked";
+    }
+    page += "> Allow plain HTTP OTA</label>";
     page += "</fieldset>";
 
     page += "<button type='submit'>Save and reboot</button></form></body></html>";
