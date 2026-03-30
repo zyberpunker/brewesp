@@ -150,11 +150,21 @@
         <h3>Controller status</h3>
       </div>
     </div>
+    <div
+      id="controller-fault-banner"
+      class="fault-banner {% if live_payload.has_fault %}is-active{% endif %}"
+      role="status"
+      aria-live="polite"
+      {% if not live_payload.has_fault %}hidden{% endif %}>
+      <span class="fault-banner__label">Controller fault</span>
+      <strong id="controller-fault-text">{{ live_payload.fault or "none" }}</strong>
+    </div>
     <dl class="spec-grid">
       <div><dt>MQTT</dt><dd id="mqtt-state">{{ "connected" if device.mqtt_connected else "disconnected" }}</dd></div>
       <div><dt>Last heartbeat</dt><dd id="last-heartbeat">{{ format_timestamp(device.last_heartbeat_at) }}</dd></div>
-      <div><dt>Controller</dt><dd id="controller-state">{{ device.last_payload.controller_state if device.last_payload and device.last_payload.controller_state else "unknown" }}</dd></div>
-      <div><dt>Controller reason</dt><dd id="controller-reason">{{ device.last_payload.controller_reason if device.last_payload and device.last_payload.controller_reason else "n/a" }}</dd></div>
+      <div><dt>Controller</dt><dd id="controller-state">{{ live_payload.controller_state or "unknown" }}</dd></div>
+      <div><dt>Controller reason</dt><dd id="controller-reason">{{ live_payload.fault or live_payload.controller_reason or "n/a" }}</dd></div>
+      <div><dt>Fault</dt><dd id="controller-fault-state">{{ live_payload.fault or "none" }}</dd></div>
       <div><dt>Heating</dt><dd id="heating-state">{{ device.heating_state or "unknown" }}</dd></div>
       <div><dt>Cooling</dt><dd id="cooling-state">{{ device.cooling_state or "unknown" }}</dd></div>
       <div><dt>RSSI</dt><dd>{{ device.last_rssi or "n/a" }}</dd></div>
@@ -170,12 +180,12 @@
       </div>
     </div>
     <dl class="spec-grid">
-      <div><dt>Beer probe</dt><dd id="beer-probe-status">{% if device.last_payload and device.last_payload.beer_probe_present %}{% if device.last_payload.beer_probe_valid %}present{% else %}invalid{% endif %}{% else %}missing{% endif %}</dd></div>
-      <div><dt>Beer ROM</dt><dd id="beer-probe-rom">{{ device.last_payload.beer_probe_rom if device.last_payload and device.last_payload.beer_probe_rom else "n/a" }}</dd></div>
-      <div><dt>Chamber probe</dt><dd id="chamber-probe-status">{% if device.last_payload and device.last_payload.chamber_probe_present %}{% if device.last_payload.chamber_probe_valid %}present{% else %}invalid{% endif %}{% else %}missing{% endif %}</dd></div>
-      <div><dt>Chamber ROM</dt><dd id="chamber-probe-rom">{{ device.last_payload.chamber_probe_rom if device.last_payload and device.last_payload.chamber_probe_rom else "n/a" }}</dd></div>
-      <div><dt>Secondary enabled</dt><dd id="secondary-enabled">{{ "yes" if device.last_payload and device.last_payload.secondary_sensor_enabled else "no" }}</dd></div>
-      <div><dt>Control sensor</dt><dd id="control-sensor">{{ device.last_payload.control_sensor if device.last_payload and device.last_payload.control_sensor else "primary" }}</dd></div>
+      <div><dt>Beer probe</dt><dd id="beer-probe-status" class="sensor-state {{ live_payload.beer_probe_status }}">{{ live_payload.beer_probe_status }}</dd></div>
+      <div><dt>Beer ROM</dt><dd id="beer-probe-rom">{{ live_payload.beer_probe_rom or "n/a" }}</dd></div>
+      <div><dt>Chamber probe</dt><dd id="chamber-probe-status" class="sensor-state {{ live_payload.chamber_probe_status }}">{{ live_payload.chamber_probe_status }}</dd></div>
+      <div><dt>Chamber ROM</dt><dd id="chamber-probe-rom">{{ live_payload.chamber_probe_rom or "n/a" }}</dd></div>
+      <div><dt>Secondary enabled</dt><dd id="secondary-enabled">{{ "yes" if live_payload.secondary_sensor_enabled else "no" }}</dd></div>
+      <div><dt>Control sensor</dt><dd id="control-sensor">{{ live_payload.control_sensor or "primary" }}</dd></div>
     </dl>
   </article>
 

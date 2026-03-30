@@ -71,12 +71,12 @@ Payload example:
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:00:00Z",
   "uptime_s": 86400,
   "wifi_rssi": -58,
   "heap_free": 183424,
-  "active_config_version": 4,
-  "fault": null
+  "ui": "headless",
+  "heating": "off",
+  "cooling": "off"
 }
 ```
 
@@ -93,14 +93,26 @@ Payload example:
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:00:00Z",
+  "ts": 1743343200,
   "temp_primary_c": 18.42,
   "temp_secondary_c": 17.1,
-  "temp_beer_c": 18.42,
-  "temp_chamber_c": 17.1,
   "setpoint_c": 18.5,
   "effective_target_c": 18.7,
   "mode": "profile",
+  "controller_state": "idle",
+  "controller_reason": "within hysteresis",
+  "automatic_control_active": true,
+  "active_config_version": 4,
+  "secondary_sensor_enabled": false,
+  "control_sensor": "primary",
+  "beer_probe_present": true,
+  "beer_probe_valid": true,
+  "beer_probe_stale": false,
+  "beer_probe_rom": "28ff112233445566",
+  "chamber_probe_present": true,
+  "chamber_probe_valid": true,
+  "chamber_probe_stale": false,
+  "chamber_probe_rom": "28ffaa9988776655",
   "profile_id": "ale-primary",
   "profile_step_id": "rise",
   "heating": false,
@@ -127,7 +139,6 @@ Payload example:
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:00:00Z",
   "ui": "headless",
   "mode": "profile",
   "setpoint_c": 18.5,
@@ -144,17 +155,19 @@ Payload example:
   "cooling": "off",
   "heating_desc": "gpio 25 off",
   "cooling_desc": "kasa 192.168.1.88 off",
-  "controller_state": "holding",
-  "controller_reason": "profile_step_active",
+  "controller_state": "idle",
+  "controller_reason": "within hysteresis",
   "automatic_control_active": true,
   "active_config_version": 4,
   "secondary_sensor_enabled": false,
   "control_sensor": "primary",
   "beer_probe_present": true,
   "beer_probe_valid": true,
+  "beer_probe_stale": false,
   "beer_probe_rom": "28ff112233445566",
   "chamber_probe_present": true,
   "chamber_probe_valid": true,
+  "chamber_probe_stale": false,
   "chamber_probe_rom": "28ffaa9988776655",
   "profile_runtime": {
     "active_profile_id": "ale-primary",
@@ -178,6 +191,10 @@ Additional OTA fields:
 - `ota_progress_pct` is currently coarse-grained; the current firmware reports `100`
   when the new image is staged and reboot is pending, otherwise `0`
 - `heating` and `cooling` in `state` are string enums: `on`, `off`, or `unknown`
+- `fault` in `state` and `telemetry` is either `null` or a short string such as
+  `beer sensor stale` or `chamber sensor missing`
+- `beer_probe_stale` and `chamber_probe_stale` indicate firmware-side stale detection;
+  the current firmware uses a fixed `30` second timeout for this fault model
 
 `profile_runtime` is the runtime truth for an active profile. Frontends should
 use it instead of inferring progress from desired config alone.
@@ -200,6 +217,17 @@ Expected `profile_runtime.phase` values:
 Optional raw event stream for archival or analytics.
 
 This can initially be identical to `telemetry` and later be split if needed.
+
+### Sensor fault semantics
+
+- the controller publishes per-probe `present`, `valid`, and `stale` flags for
+  both beer and chamber probes
+- `fault` is controller-scoped, not a generic alarm bucket
+- `fault` becomes non-null only when the selected primary control sensor is
+  missing, invalid, or stale
+- when `fault` is non-null, the firmware forces both outputs off locally
+- a non-primary probe may still report `stale` or `invalid` without forcing a
+  controller fault by itself
 
 ### `config/desired`
 
@@ -290,7 +318,6 @@ Payload example:
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:00:03Z",
   "requested_version": 4,
   "applied_version": 4,
   "result": "ok",
@@ -303,7 +330,6 @@ If validation fails:
 ```json
 {
   "device_id": "fermenter-01",
-  "ts": "2026-03-29T14:00:03Z",
   "requested_version": 4,
   "applied_version": 3,
   "result": "error",

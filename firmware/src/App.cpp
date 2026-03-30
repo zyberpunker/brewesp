@@ -6,6 +6,21 @@ namespace {
 const uint32_t kHeartbeatLogIntervalMs = 5000;
 constexpr float kDefaultSetpointC = 20.0f;
 constexpr uint32_t kProfileRuntimePersistIntervalMs = 300000UL;
+constexpr uint32_t kSensorStaleAfterMs = 30000UL;
+
+bool isSensorStale(const SensorManager::Reading& reading, uint32_t nowMs) {
+    return reading.updatedAtMs != 0 && static_cast<uint32_t>(nowMs - reading.updatedAtMs) > kSensorStaleAfterMs;
+}
+
+String sensorFaultReason(const char* sensorName, const SensorManager::Reading& reading, bool stale) {
+    if (stale) {
+        return String(sensorName) + " sensor stale";
+    }
+    if (!reading.present) {
+        return String(sensorName) + " sensor missing";
+    }
+    return String(sensorName) + " sensor invalid";
+}
 }
 
 void App::begin() {
@@ -185,6 +200,17 @@ void App::handleOutputCommand(const String& target, OutputState state) {
         return;
     }
 
+    const ControllerEngine::Inputs currentInputs = buildControllerInputs();
+    const bool sensorFaultActive = !currentInputs.hasPrimaryTemp;
+
+    if (state == OutputState::On && sensorFaultActive) {
+        Serial.printf(
+            "[app] ignoring output-on command during sensor fault target=%s reason=%s\r\n",
+            target.c_str(),
+            currentInputs.faultReason.isEmpty() ? "sensor fault active" : currentInputs.faultReason.c_str());
+        return;
+    }
+
     if (isOtaLockoutActive()) {
         Serial.printf(
             "[app] ignoring output command during OTA reboot pending target=%s state=%s\r\n",
@@ -358,6 +384,8 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     const SensorManager::Reading& beerProbe = sensors_.beerProbe();
     const SensorManager::Reading& chamberProbe = sensors_.chamberProbe();
     const uint32_t nowMs = millis();
+    const bool beerProbeStale = isSensorStale(beerProbe, nowMs);
+    const bool chamberProbeStale = isSensorStale(chamberProbe, nowMs);
     telemetry.hasSetpoint = true;
     telemetry.setpointC = fermentationConfig_.thermostat.setpointC;
     telemetry.hysteresisC = fermentationConfig_.thermostat.hysteresisC;
@@ -370,24 +398,27 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     telemetry.automaticControlActive = controllerStatus.automaticControlActive;
     telemetry.secondarySensorEnabled = fermentationConfig_.sensors.secondaryEnabled;
     telemetry.controlSensor = fermentationConfig_.sensors.controlSensor;
-    if (beerProbe.valid) {
+    if (beerProbe.valid && !beerProbeStale) {
         telemetry.hasPrimaryTemp = true;
         telemetry.primaryTempC = beerProbe.tempC + fermentationConfig_.sensors.primaryOffsetC;
     }
     telemetry.beerProbePresent = beerProbe.present;
     telemetry.beerProbeValid = beerProbe.valid;
+    telemetry.beerProbeStale = beerProbeStale;
     if (beerProbe.present) {
         telemetry.beerProbeRom = sensors_.beerProbeRom();
     }
-    if (chamberProbe.valid) {
+    if (chamberProbe.valid && !chamberProbeStale) {
         telemetry.hasSecondaryTemp = true;
         telemetry.secondaryTempC = chamberProbe.tempC + fermentationConfig_.sensors.secondaryOffsetC;
     }
     telemetry.chamberProbePresent = chamberProbe.present;
     telemetry.chamberProbeValid = chamberProbe.valid;
+    telemetry.chamberProbeStale = chamberProbeStale;
     if (chamberProbe.present) {
         telemetry.chamberProbeRom = sensors_.chamberProbeRom();
     }
+    telemetry.fault = controllerStatus.state == ControllerEngine::State::Fault ? controllerStatus.reason : String();
     if (profileRuntime_.active) {
         telemetry.hasProfileRuntime = true;
         telemetry.profileId = profileRuntime_.activeProfileId;
@@ -422,19 +453,29 @@ ControllerEngine::Inputs App::buildControllerInputs() const {
     const SensorManager::Reading& beerProbe = sensors_.beerProbe();
     const SensorManager::Reading& chamberProbe = sensors_.chamberProbe();
     inputs.nowMs = millis();
+    const bool beerProbeStale = isSensorStale(beerProbe, inputs.nowMs);
+    const bool chamberProbeStale = isSensorStale(chamberProbe, inputs.nowMs);
+    const bool beerProbeValid = beerProbe.valid && !beerProbeStale;
+    const bool chamberProbeValid = chamberProbe.valid && !chamberProbeStale;
     const bool useSecondaryAsControl =
         fermentationConfig_.sensors.secondaryEnabled && fermentationConfig_.sensors.controlSensor == "secondary";
 
     if (useSecondaryAsControl) {
-        inputs.hasPrimaryTemp = chamberProbe.valid;
+        inputs.hasPrimaryTemp = chamberProbeValid;
         inputs.primaryTempC = chamberProbe.tempC + fermentationConfig_.sensors.secondaryOffsetC;
-        inputs.hasSecondaryTemp = beerProbe.valid;
+        inputs.hasSecondaryTemp = beerProbeValid;
         inputs.secondaryTempC = beerProbe.tempC + fermentationConfig_.sensors.primaryOffsetC;
     } else {
-        inputs.hasPrimaryTemp = beerProbe.valid;
+        inputs.hasPrimaryTemp = beerProbeValid;
         inputs.primaryTempC = beerProbe.tempC + fermentationConfig_.sensors.primaryOffsetC;
-        inputs.hasSecondaryTemp = chamberProbe.valid;
+        inputs.hasSecondaryTemp = chamberProbeValid;
         inputs.secondaryTempC = chamberProbe.tempC + fermentationConfig_.sensors.secondaryOffsetC;
+    }
+    if (!inputs.hasPrimaryTemp) {
+        inputs.faultReason = sensorFaultReason(
+            useSecondaryAsControl ? "chamber" : "beer",
+            useSecondaryAsControl ? chamberProbe : beerProbe,
+            useSecondaryAsControl ? chamberProbeStale : beerProbeStale);
     }
     return inputs;
 }

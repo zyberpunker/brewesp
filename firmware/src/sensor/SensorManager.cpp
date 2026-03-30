@@ -153,7 +153,6 @@ void SensorManager::assignProbeAddresses(const SystemConfig& config) {
 void SensorManager::readProbe(ReadState& probe, uint32_t nowMs) {
     probe.reading.present = false;
     probe.reading.valid = false;
-    probe.reading.updatedAtMs = 0;
 
     if (!probe.configured) {
         return;

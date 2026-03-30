@@ -32,9 +32,11 @@ public:
         String controlSensor = "primary";
         bool beerProbePresent = false;
         bool beerProbeValid = false;
+        bool beerProbeStale = false;
         String beerProbeRom;
         bool chamberProbePresent = false;
         bool chamberProbeValid = false;
+        bool chamberProbeStale = false;
         String chamberProbeRom;
         String profileId;
         String profileStepId;
@@ -55,6 +57,7 @@ public:
         bool otaUpdateAvailable = false;
         uint8_t otaProgressPercent = 0;
         bool otaRebootPending = false;
+        String fault;
     };
 
     using SystemConfigHandler = std::function<void(const SystemConfig&)>;

@@ -25,7 +25,8 @@ bool ControllerEngine::update(const FermentationConfig& config, const Inputs& in
 
     if (!inputs.hasPrimaryTemp) {
         const bool outputsChanged = forceOutputsOff(outputs);
-        return setState(State::Fault, "awaiting primary sensor") || outputsChanged;
+        const String reason = inputs.faultReason.isEmpty() ? "primary sensor invalid" : inputs.faultReason;
+        return setState(State::Fault, reason) || outputsChanged;
     }
 
     status_.automaticControlActive = true;
@@ -34,10 +35,11 @@ bool ControllerEngine::update(const FermentationConfig& config, const Inputs& in
     const float hysteresisC = config.thermostat.hysteresisC;
     const float heatThresholdC = setpointC - hysteresisC;
     const float coolThresholdC = setpointC + hysteresisC;
+    const float processTempC = inputs.primaryTempC;
 
-    if (inputs.primaryTempC <= heatThresholdC) {
+    if (processTempC <= heatThresholdC) {
         status_.heatingDemand = true;
-    } else if (inputs.primaryTempC >= coolThresholdC) {
+    } else if (processTempC >= coolThresholdC) {
         status_.coolingDemand = true;
     }
 
