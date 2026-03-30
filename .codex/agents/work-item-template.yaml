@@ -1,0 +1,29 @@
+# Shared handoff format for planner -> coder/reviewer/verifier.
+
+task_id: "area-short-slug"
+title: "Short task title"
+goal: >
+  One sentence describing the intended user-visible or system-visible outcome.
+
+allowed_paths:
+  - "firmware/"
+
+forbidden_paths:
+  - "services/web/"
+  - "infra/"
+
+depends_on: []
+
+risk_level: "medium" # low | medium | high
+requires_safety_review: false
+
+required_checks:
+  - "pio run"
+
+definition_of_done:
+  - "Behavior is implemented only within allowed paths."
+  - "Required docs or contract updates are included when behavior changes."
+  - "Relevant quality gates have pass/fail evidence."
+
+notes:
+  - "Use this section for planner assumptions or review-specific constraints."

@@ -91,6 +91,15 @@ repository.
 - If a planned feature is added, removed, or deferred, reflect that in the
   project and documentation in the same round of work.
 
+## Multi-Agent Workflow
+
+- For structured multi-agent execution, use
+  [docs/agent-workflow.md](C:/Users/ola/git/brewesp/docs/agent-workflow.md) and
+  the role prompts under `.codex/agents/`.
+- Treat `AGENTS.md` as the hard policy layer and the `.codex/agents/` files as
+  execution-role scaffolding.
+- If a role prompt conflicts with `AGENTS.md`, follow `AGENTS.md`.
+
 ## Safety and Operational Rules
 
 - Any change that can affect heating, cooling, sensor validity, or fail-safe
