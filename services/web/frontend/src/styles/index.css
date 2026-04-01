@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --bg: #f4f1ea;
+  --surface: rgba(251, 248, 242, 0.88);
+  --surface-strong: #ece5d9;
+  --ink: #1f2724;
+  --muted: #66736d;
+  --accent: #2f6c60;
+  --cool: #3f86c6;
+  --heat: #d46a3a;
+  --fault: #b2413b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#device-detail-root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Manrope", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+pre,
+code {
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+}

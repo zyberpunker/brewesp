@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, select
@@ -17,7 +17,6 @@ from .db import SessionLocal, init_db
 from .models import (
     Device,
     DeviceFermentationConfig,
-    DeviceHeartbeat,
     DeviceOutputAssignment,
     DeviceTelemetry,
     DiscoveredRelay,
@@ -45,6 +44,8 @@ MAX_PROFILE_STEPS = 10
 MAX_PROFILE_TARGET_C = 50.0
 MIN_PROFILE_TARGET_C = -20.0
 MAX_PROFILE_DURATION_S = 3596400
+DEFAULT_DEVICE_CHART_HOURS = 12
+MAX_DEVICE_TELEMETRY_SAMPLES = 20000
 
 
 def _firmware_file_path(filename: str | None = None) -> Path:
@@ -63,18 +64,6 @@ def _firmware_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _serialize_heartbeats(heartbeats: list[DeviceHeartbeat]) -> list[dict]:
-    return [
-        {
-            "recorded_at": heartbeat.recorded_at.isoformat(),
-            "wifi_rssi": heartbeat.wifi_rssi,
-            "heap_free": heartbeat.heap_free,
-            "uptime_s": heartbeat.uptime_s,
-        }
-        for heartbeat in heartbeats
-    ]
 
 
 def _serialize_telemetry(samples: list[DeviceTelemetry]) -> list[dict]:
@@ -97,6 +86,25 @@ def _serialize_telemetry(samples: list[DeviceTelemetry]) -> list[dict]:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _load_device_telemetry(
+    session,
+    device_pk: int,
+    *,
+    hours: int | None = None,
+    limit: int | None = None,
+) -> list[DeviceTelemetry]:
+    stmt = select(DeviceTelemetry).where(DeviceTelemetry.device_id == device_pk)
+
+    if hours is not None:
+        stmt = stmt.where(DeviceTelemetry.recorded_at >= (_utcnow() - timedelta(hours=hours)))
+
+    sample_limit = limit if limit is not None else MAX_DEVICE_TELEMETRY_SAMPLES
+    stmt = stmt.order_by(desc(DeviceTelemetry.recorded_at)).limit(
+        max(1, min(sample_limit, MAX_DEVICE_TELEMETRY_SAMPLES))
+    )
+    return session.scalars(stmt).all()
 
 
 def _apply_display_status(device: Device, now: datetime) -> Device:
@@ -157,6 +165,8 @@ def _device_live_payload(device: Device, now: datetime) -> dict:
         "cooling_state": device.cooling_state or "unknown",
         "last_temp_c": device.last_temp_c,
         "last_target_temp_c": device.last_target_temp_c,
+        "last_rssi": device.last_rssi,
+        "last_heap_free": device.last_heap_free,
         "heating_on_button_state": _output_button_state(device.heating_state, "on"),
         "heating_off_button_state": _output_button_state(device.heating_state, "off"),
         "cooling_on_button_state": _output_button_state(device.cooling_state, "on"),
@@ -183,6 +193,7 @@ def _device_live_payload(device: Device, now: datetime) -> dict:
         "secondary_sensor_enabled": state_payload.get("secondary_sensor_enabled"),
         "control_sensor": state_payload.get("control_sensor"),
         "profile_runtime": state_payload.get("profile_runtime"),
+        "last_payload": state_payload,
         "fermentation_config": {
             "desired_version": fermentation_config.desired_version if fermentation_config else None,
             "last_applied_version": fermentation_config.last_applied_version if fermentation_config else None,
@@ -223,6 +234,25 @@ def _build_system_config_payload(device: Device) -> dict:
         "heating": _serialize("heating"),
         "cooling": _serialize("cooling"),
     }
+
+
+def _serialize_discovered_relay(relay: DiscoveredRelay) -> dict:
+    return {
+        "host": relay.host,
+        "alias": relay.alias,
+        "driver": relay.driver,
+        "port": relay.port,
+        "model": relay.model,
+        "is_on": relay.is_on,
+        "last_seen_at": relay.last_seen_at.isoformat() if relay.last_seen_at else None,
+        "last_seen_label": _format_timestamp(relay.last_seen_at),
+    }
+
+
+def _build_output_routing_payload(device: Device, discovered_relays: list[DiscoveredRelay]) -> dict:
+    payload = _build_system_config_payload(device)
+    payload["discovered_relays"] = [_serialize_discovered_relay(relay) for relay in discovered_relays]
+    return payload
 
 
 def _default_profile_plan(config: DeviceFermentationConfig) -> dict:
@@ -317,16 +347,94 @@ def _build_profile_command_payload(command: str, step_id: str | None = None) -> 
 
 
 def _validate_v2_payload(payload: dict) -> None:
+    def _require_float(section: dict, field: str, *, error_field: str | None = None) -> float:
+        try:
+            return float(section[field])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"{error_field or field} must be numeric") from None
+
+    def _require_int(section: dict, field: str, *, error_field: str | None = None) -> int:
+        try:
+            return int(section[field])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"{error_field or field} must be an integer") from None
+
     if payload.get("schema_version", 2) != 2:
         raise ValueError("schema_version must be 2")
     if payload.get("mode") not in {"thermostat", "profile"}:
         raise ValueError("mode must be thermostat or profile")
-    if not isinstance(payload.get("thermostat"), dict):
+    thermostat = payload.get("thermostat")
+    sensors = payload.get("sensors")
+    alarms = payload.get("alarms")
+    if not isinstance(thermostat, dict):
         raise ValueError("thermostat payload is required")
-    if not isinstance(payload.get("sensors"), dict):
+    if not isinstance(sensors, dict):
         raise ValueError("sensors payload is required")
-    if not isinstance(payload.get("alarms"), dict):
+    if not isinstance(alarms, dict):
         raise ValueError("alarms payload is required")
+    try:
+        thermostat_setpoint_c = float(thermostat["setpoint_c"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("thermostat.setpoint_c must be numeric") from None
+    if thermostat_setpoint_c < MIN_PROFILE_TARGET_C or thermostat_setpoint_c > MAX_PROFILE_TARGET_C:
+        raise ValueError(
+            f"thermostat.setpoint_c must be between {MIN_PROFILE_TARGET_C} and {MAX_PROFILE_TARGET_C}"
+        )
+    thermostat_hysteresis_c = _require_float(
+        thermostat, "hysteresis_c", error_field="thermostat.hysteresis_c"
+    )
+    if thermostat_hysteresis_c < 0.1 or thermostat_hysteresis_c > 5.0:
+        raise ValueError("thermostat.hysteresis_c must be between 0.1 and 5.0")
+    cooling_delay_s = _require_int(
+        thermostat, "cooling_delay_s", error_field="thermostat.cooling_delay_s"
+    )
+    if cooling_delay_s < 0 or cooling_delay_s > 3600:
+        raise ValueError("thermostat.cooling_delay_s must be between 0 and 3600")
+    heating_delay_s = _require_int(
+        thermostat, "heating_delay_s", error_field="thermostat.heating_delay_s"
+    )
+    if heating_delay_s < 0 or heating_delay_s > 3600:
+        raise ValueError("thermostat.heating_delay_s must be between 0 and 3600")
+
+    primary_offset_c = _require_float(
+        sensors, "primary_offset_c", error_field="sensors.primary_offset_c"
+    )
+    if primary_offset_c < -5.0 or primary_offset_c > 5.0:
+        raise ValueError("sensors.primary_offset_c must be between -5.0 and 5.0")
+    secondary_enabled = sensors.get("secondary_enabled")
+    if not isinstance(secondary_enabled, bool):
+        raise ValueError("sensors.secondary_enabled must be true or false")
+    control_sensor = str(sensors.get("control_sensor", "")).strip()
+    if control_sensor not in {"primary", "secondary"}:
+        raise ValueError("sensors.control_sensor must be primary or secondary")
+    if not secondary_enabled and control_sensor != "primary":
+        raise ValueError("sensors.control_sensor must be primary when secondary sensor is disabled")
+
+    deviation_c = _require_float(alarms, "deviation_c", error_field="alarms.deviation_c")
+    if deviation_c < 0.0 or deviation_c > 25.0:
+        raise ValueError("alarms.deviation_c must be between 0.0 and 25.0")
+    sensor_stale_s = _require_int(
+        alarms, "sensor_stale_s", error_field="alarms.sensor_stale_s"
+    )
+    if sensor_stale_s < 1 or sensor_stale_s > 600:
+        raise ValueError("alarms.sensor_stale_s must be between 1 and 600")
+
+    if secondary_enabled:
+        secondary_offset_c = _require_float(
+            sensors, "secondary_offset_c", error_field="sensors.secondary_offset_c"
+        )
+        if secondary_offset_c < -5.0 or secondary_offset_c > 5.0:
+            raise ValueError("sensors.secondary_offset_c must be between -5.0 and 5.0")
+        secondary_limit_hysteresis_c = _require_float(
+            sensors,
+            "secondary_limit_hysteresis_c",
+            error_field="sensors.secondary_limit_hysteresis_c",
+        )
+        if secondary_limit_hysteresis_c < 0.1 or secondary_limit_hysteresis_c > 25.0:
+            raise ValueError(
+                "sensors.secondary_limit_hysteresis_c must be between 0.1 and 25.0"
+            )
+
     if payload.get("mode") == "profile":
         profile = payload.get("profile")
         if not isinstance(profile, dict):
@@ -397,10 +505,55 @@ def _upsert_assignment(session, device: Device, role: str, relay: DiscoveredRela
     existing.alias = relay.alias
 
 
+def _resolve_routing_relay(
+    session,
+    device: Device,
+    *,
+    host: str,
+    alias: str = "",
+) -> DiscoveredRelay | None:
+    normalized_host = host.strip()
+    normalized_alias = alias.strip() or None
+    if not normalized_host:
+        return None
+
+    relay = session.scalar(select(DiscoveredRelay).where(DiscoveredRelay.host == normalized_host))
+    if relay is None:
+        relay = DiscoveredRelay(
+            source_device_id=device.id,
+            host=normalized_host,
+            alias=normalized_alias,
+            driver="kasa_local",
+            port=9999,
+        )
+        session.add(relay)
+        return relay
+
+    relay.source_device_id = relay.source_device_id or device.id
+    if normalized_alias:
+        relay.alias = normalized_alias
+    return relay
+
+
 def _get_or_create_fermentation_config(session, device: Device) -> DeviceFermentationConfig:
     config = device.fermentation_config
     if config is None:
-        config = DeviceFermentationConfig(device_id=device.id)
+        config = DeviceFermentationConfig(
+            device_id=device.id,
+            schema_version=2,
+            desired_version=1,
+            name="Default fermentation",
+            mode="thermostat",
+            setpoint_c=20.0,
+            hysteresis_c=0.3,
+            cooling_delay_s=300,
+            heating_delay_s=120,
+            primary_offset_c=0.0,
+            secondary_enabled=False,
+            control_sensor="primary",
+            deviation_c=2.0,
+            sensor_stale_s=30,
+        )
         device.fermentation_config = config
         session.add(config)
     return config
@@ -416,6 +569,15 @@ def _format_timestamp(value: datetime | None) -> str:
     if value is None:
         return "never"
     return value.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+OUTPUT_COMMAND_MAP = {
+    "heating_on": {"command": "set_output", "target": "heating", "state": "on"},
+    "heating_off": {"command": "set_output", "target": "heating", "state": "off"},
+    "cooling_on": {"command": "set_output", "target": "cooling", "state": "on"},
+    "cooling_off": {"command": "set_output", "target": "cooling", "state": "off"},
+    "all_off": {"command": "set_output", "target": "all", "state": "off"},
+}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -470,12 +632,6 @@ def device_detail(request: Request, device_id: str):
             return HTMLResponse("Device not found", status_code=404)
         device = _apply_display_status(device, now)
 
-        heartbeats = session.scalars(
-            select(DeviceHeartbeat)
-            .where(DeviceHeartbeat.device_id == device.id)
-            .order_by(desc(DeviceHeartbeat.recorded_at))
-            .limit(120)
-        ).all()
         telemetry = session.scalars(
             select(DeviceTelemetry)
             .where(DeviceTelemetry.device_id == device.id)
@@ -483,32 +639,19 @@ def device_detail(request: Request, device_id: str):
             .limit(240)
         ).all()
 
-        discovered_relays = session.scalars(
-            select(DiscoveredRelay)
-            .order_by(desc(DiscoveredRelay.last_seen_at), DiscoveredRelay.alias)
-        ).all()
-
-        assignments = {assignment.role: assignment for assignment in device.output_assignments}
         live_payload = _device_live_payload(device, now)
 
     return templates.TemplateResponse(
         request,
         "device_detail.html",
         {
-            "device": device,
-            "fermentation_config": device.fermentation_config,
-            "live_payload": live_payload,
-            "heartbeats": list(reversed(_serialize_heartbeats(heartbeats))),
-            "telemetry": list(reversed(_serialize_telemetry(telemetry))),
-            "discovered_relays": discovered_relays,
-            "assignments": assignments,
-            "heating_on_button_state": _output_button_state(device.heating_state, "on"),
-            "heating_off_button_state": _output_button_state(device.heating_state, "off"),
-            "cooling_on_button_state": _output_button_state(device.cooling_state, "on"),
-            "cooling_off_button_state": _output_button_state(device.cooling_state, "off"),
+            "device_id": device.device_id,
+            "bootstrap": {
+                "deviceId": device.device_id,
+                "initialLivePayload": live_payload,
+                "initialTelemetry": list(reversed(_serialize_telemetry(telemetry))),
+            },
             "page_title": f"{device.device_id} detail",
-            "format_temperature": _format_temperature,
-            "format_timestamp": _format_timestamp,
         },
     )
 
@@ -527,19 +670,37 @@ def device_live(device_id: str):
         return JSONResponse(_device_live_payload(device, now))
 
 
-@app.post("/devices/{device_id}/discover")
-def discover_kasa(device_id: str):
-    mqtt_bridge.publish_command(device_id, {"command": "discover_kasa"})
-    return RedirectResponse(url=f"/devices/{device_id}", status_code=303)
+@app.get("/api/devices/{device_id}/output-routing")
+def output_routing(device_id: str):
+    with SessionLocal() as session:
+        device = session.scalar(
+            select(Device)
+            .options(selectinload(Device.output_assignments))
+            .where(Device.device_id == device_id)
+        )
+        if device is None:
+            return JSONResponse({"error": "Device not found"}, status_code=404)
+
+        discovered_relays = session.scalars(
+            select(DiscoveredRelay)
+            .order_by(desc(DiscoveredRelay.last_seen_at), DiscoveredRelay.alias)
+        ).all()
+        return JSONResponse(_build_output_routing_payload(device, discovered_relays))
 
 
-@app.post("/devices/{device_id}/outputs")
-async def update_outputs(request: Request, device_id: str):
-    form = await request.form()
-    heating_host = str(form.get("heating_host", "")).strip() or str(form.get("heating_host_manual", "")).strip()
-    cooling_host = str(form.get("cooling_host", "")).strip() or str(form.get("cooling_host_manual", "")).strip()
-    heating_alias_manual = str(form.get("heating_alias_manual", "")).strip()
-    cooling_alias_manual = str(form.get("cooling_alias_manual", "")).strip()
+@app.post("/api/devices/{device_id}/output-routing")
+async def update_output_routing(request: Request, device_id: str):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
+
+    heating = payload.get("heating")
+    cooling = payload.get("cooling")
+    if not isinstance(heating, dict) or not isinstance(cooling, dict):
+        return JSONResponse({"error": "heating and cooling payloads are required"}, status_code=400)
 
     with SessionLocal() as session:
         device = session.scalar(
@@ -548,111 +709,79 @@ async def update_outputs(request: Request, device_id: str):
             .where(Device.device_id == device_id)
         )
         if device is None:
-            return HTMLResponse("Device not found", status_code=404)
+            return JSONResponse({"error": "Device not found"}, status_code=404)
 
-        heating_relay = None
-        cooling_relay = None
-        if heating_host:
-            heating_relay = session.scalar(select(DiscoveredRelay).where(DiscoveredRelay.host == heating_host))
-            if heating_relay is None:
-                heating_relay = DiscoveredRelay(
-                    source_device_id=device.id,
-                    host=heating_host,
-                    alias=heating_alias_manual or None,
-                    driver="kasa_local",
-                    port=9999,
-                )
-                session.add(heating_relay)
-        if cooling_host:
-            cooling_relay = session.scalar(select(DiscoveredRelay).where(DiscoveredRelay.host == cooling_host))
-            if cooling_relay is None:
-                cooling_relay = DiscoveredRelay(
-                    source_device_id=device.id,
-                    host=cooling_host,
-                    alias=cooling_alias_manual or None,
-                    driver="kasa_local",
-                    port=9999,
-                )
-                session.add(cooling_relay)
+        heating_relay = _resolve_routing_relay(
+            session,
+            device,
+            host=str(heating.get("host", "")),
+            alias=str(heating.get("alias", "")),
+        )
+        cooling_relay = _resolve_routing_relay(
+            session,
+            device,
+            host=str(cooling.get("host", "")),
+            alias=str(cooling.get("alias", "")),
+        )
 
         _upsert_assignment(session, device, "heating", heating_relay)
         _upsert_assignment(session, device, "cooling", cooling_relay)
         session.flush()
 
-        mqtt_bridge.publish_system_config(device.device_id, _build_system_config_payload(device))
+        discovered_relays = session.scalars(
+            select(DiscoveredRelay)
+            .order_by(desc(DiscoveredRelay.last_seen_at), DiscoveredRelay.alias)
+        ).all()
+        publish_payload = _build_system_config_payload(device)
+        response_payload = _build_output_routing_payload(device, discovered_relays)
         session.commit()
 
-    return RedirectResponse(url=f"/devices/{device_id}", status_code=303)
+    mqtt_bridge.publish_system_config(device.device_id, publish_payload)
+    return JSONResponse(response_payload)
 
 
-@app.post("/devices/{device_id}/fermentation")
-async def update_fermentation(request: Request, device_id: str):
-    form = await request.form()
+@app.post("/api/devices/{device_id}/output-routing/discover")
+def discover_output_relays(device_id: str):
+    mqtt_bridge.publish_command(device_id, {"command": "discover_kasa"})
+    return JSONResponse({"status": "queued", "command": "discover_kasa"})
+
+
+@app.get("/api/devices/{device_id}/telemetry")
+def device_telemetry(device_id: str, limit: int = 240, hours: int | None = None, all: bool = False):
+    if hours is not None and (hours < 1 or hours > 24 * 30):
+        return JSONResponse({"error": "hours must be between 1 and 720"}, status_code=400)
 
     with SessionLocal() as session:
-        device = session.scalar(
-            select(Device)
-            .options(selectinload(Device.fermentation_config))
-            .where(Device.device_id == device_id)
-        )
+        device = session.scalar(select(Device).where(Device.device_id == device_id))
         if device is None:
-            return HTMLResponse("Device not found", status_code=404)
+            return JSONResponse({"error": "Device not found"}, status_code=404)
 
-        config = _get_or_create_fermentation_config(session, device)
-        form_mode = str(form.get("mode", "thermostat")).strip() or "thermostat"
-        config.schema_version = 2
-        config.desired_version = int(form.get("desired_version", config.desired_version or 1))
-        config.name = str(form.get("name", "")).strip() or "Default fermentation"
-        config.mode = form_mode
-        config.setpoint_c = float(form.get("setpoint_c", config.setpoint_c))
-        config.hysteresis_c = float(form.get("hysteresis_c", config.hysteresis_c))
-        config.cooling_delay_s = int(form.get("cooling_delay_s", config.cooling_delay_s))
-        config.heating_delay_s = int(form.get("heating_delay_s", config.heating_delay_s))
-        config.primary_offset_c = float(form.get("primary_offset_c", config.primary_offset_c))
-        config.secondary_enabled = form.get("secondary_enabled") == "on"
-        config.control_sensor = str(form.get("control_sensor", "primary")).strip() or "primary"
-        config.deviation_c = config.deviation_c or 2.0
-        config.sensor_stale_s = config.sensor_stale_s or 30
-        if config.secondary_enabled:
-            config.secondary_offset_c = float(form.get("secondary_offset_c", config.secondary_offset_c or 0.0))
-            config.secondary_limit_hysteresis_c = float(
-                form.get("secondary_limit_hysteresis_c", config.secondary_limit_hysteresis_c or 1.5)
-            )
-        else:
-            config.secondary_offset_c = None
-            config.secondary_limit_hysteresis_c = None
-            config.control_sensor = "primary"
-
-        if config.mode == "profile" and not config.profile_plan:
-            config.profile_plan = _default_profile_plan(config)
-        elif config.mode != "profile":
-            config.profile_plan = None
-
-        payload = _build_fermentation_config_payload(device, config)
-        session.commit()
-        mqtt_bridge.publish_fermentation_config(device.device_id, payload)
-
-    return RedirectResponse(url=f"/devices/{device_id}", status_code=303)
+        telemetry_hours = None if all else hours
+        samples = _load_device_telemetry(
+            session,
+            device.id,
+            hours=telemetry_hours,
+            limit=limit if telemetry_hours is None else MAX_DEVICE_TELEMETRY_SAMPLES,
+        )
+        return JSONResponse(list(reversed(_serialize_telemetry(samples))))
 
 
-@app.post("/devices/{device_id}/commands")
-async def command_device(request: Request, device_id: str):
-    form = await request.form()
-    action = str(form.get("action", "")).strip()
+@app.post("/api/devices/{device_id}/commands/output")
+async def output_command(request: Request, device_id: str):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
 
-    command_map = {
-        "heating_on": {"command": "set_output", "target": "heating", "state": "on"},
-        "heating_off": {"command": "set_output", "target": "heating", "state": "off"},
-        "cooling_on": {"command": "set_output", "target": "cooling", "state": "on"},
-        "cooling_off": {"command": "set_output", "target": "cooling", "state": "off"},
-        "all_off": {"command": "set_output", "target": "all", "state": "off"},
-    }
+    action = str(payload.get("action", "")).strip()
+    command = OUTPUT_COMMAND_MAP.get(action)
+    if command is None:
+        return JSONResponse({"error": "Unsupported output action"}, status_code=400)
 
-    payload = command_map.get(action)
-    if payload is not None:
-        mqtt_bridge.publish_command(device_id, payload)
-
-    return RedirectResponse(url=f"/devices/{device_id}", status_code=303)
+    mqtt_bridge.publish_command(device_id, command)
+    return JSONResponse(command)
 
 
 @app.get("/api/devices/{device_id}/fermentation-plan")
