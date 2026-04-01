@@ -1,34 +1,34 @@
 :root {
   color-scheme: light;
-  --md-sys-color-primary: #6750a4;
+  --md-sys-color-primary: #2f6c60;
   --md-sys-color-on-primary: #ffffff;
-  --md-sys-color-primary-container: #e9ddff;
-  --md-sys-color-on-primary-container: #22005d;
-  --md-sys-color-secondary: #625b71;
-  --md-sys-color-secondary-container: #e8def8;
-  --md-sys-color-tertiary: #7d5260;
-  --md-sys-color-tertiary-container: #ffd8e4;
-  --md-sys-color-error: #ba1a1a;
-  --md-sys-color-error-container: #ffdad6;
-  --md-sys-color-surface: #fdf7ff;
-  --md-sys-color-surface-container: #f3edf7;
-  --md-sys-color-surface-container-high: #ece6f0;
-  --md-sys-color-surface-container-highest: #e6e0e9;
-  --md-sys-color-outline: #7a757f;
-  --md-sys-color-outline-variant: #cac4d0;
-  --md-sys-color-on-surface: #1d1b20;
-  --md-sys-color-on-surface-variant: #49454f;
-  --md-sys-color-inverse-surface: #322f35;
-  --md-sys-color-inverse-on-surface: #f5eff7;
-  --md-sys-color-success: #2f6f4f;
-  --md-sys-color-success-container: #b3f1cb;
+  --md-sys-color-primary-container: #dbe9e4;
+  --md-sys-color-on-primary-container: #173a33;
+  --md-sys-color-secondary: #66736d;
+  --md-sys-color-secondary-container: #ece5d9;
+  --md-sys-color-tertiary: #d46a3a;
+  --md-sys-color-tertiary-container: #f4dccf;
+  --md-sys-color-error: #b2413b;
+  --md-sys-color-error-container: #f5d8d5;
+  --md-sys-color-surface: #fbf8f2;
+  --md-sys-color-surface-container: #f4efe6;
+  --md-sys-color-surface-container-high: #ece5d9;
+  --md-sys-color-surface-container-highest: #e6ddcf;
+  --md-sys-color-outline: #bdb2a4;
+  --md-sys-color-outline-variant: #d8cfc2;
+  --md-sys-color-on-surface: #1f2724;
+  --md-sys-color-on-surface-variant: #66736d;
+  --md-sys-color-inverse-surface: #1d2422;
+  --md-sys-color-inverse-on-surface: #f6f4ef;
+  --md-sys-color-success: #2f6c60;
+  --md-sys-color-success-container: #d8ebe4;
   --shell-max: 1240px;
   --shape-xl: 32px;
   --shape-lg: 24px;
   --shape-md: 18px;
-  --elevation-1: 0 1px 2px rgba(25, 21, 31, 0.08), 0 2px 6px rgba(25, 21, 31, 0.08);
-  --elevation-2: 0 6px 16px rgba(25, 21, 31, 0.09), 0 1px 3px rgba(25, 21, 31, 0.1);
-  --elevation-3: 0 18px 48px rgba(52, 37, 94, 0.12), 0 4px 10px rgba(25, 21, 31, 0.08);
+  --elevation-1: 0 1px 2px rgba(26, 34, 31, 0.08), 0 2px 6px rgba(26, 34, 31, 0.08);
+  --elevation-2: 0 6px 16px rgba(26, 34, 31, 0.09), 0 1px 3px rgba(26, 34, 31, 0.1);
+  --elevation-3: 0 18px 48px rgba(26, 34, 31, 0.12), 0 4px 10px rgba(26, 34, 31, 0.08);
 }
 
 * {
@@ -42,12 +42,12 @@ body {
 }
 
 body {
-  font-family: "Roboto Flex", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  font-family: "Manrope", "Segoe UI Variable Text", "Segoe UI", sans-serif;
   color: var(--md-sys-color-on-surface);
   background:
-    radial-gradient(circle at top left, rgba(103, 80, 164, 0.17), transparent 28rem),
-    radial-gradient(circle at bottom right, rgba(125, 82, 96, 0.13), transparent 24rem),
-    linear-gradient(180deg, #fbf7ff 0%, #f7f2fa 48%, #f9f4fb 100%);
+    radial-gradient(circle at top left, rgba(47, 108, 96, 0.18), transparent 28rem),
+    radial-gradient(circle at bottom right, rgba(212, 106, 58, 0.12), transparent 24rem),
+    linear-gradient(180deg, #f7f3ec 0%, #f4f1ea 48%, #f6f2ea 100%);
 }
 
 .shell-bg {
@@ -63,7 +63,7 @@ body {
   height: 24rem;
   top: -5rem;
   right: -1rem;
-  background: rgba(103, 80, 164, 0.16);
+  background: rgba(47, 108, 96, 0.16);
 }
 
 .shell-bg-b {
@@ -71,7 +71,7 @@ body {
   height: 20rem;
   left: -3rem;
   bottom: 3rem;
-  background: rgba(98, 91, 113, 0.12);
+  background: rgba(212, 106, 58, 0.1);
 }
 
 .app-bar,
@@ -106,8 +106,9 @@ body {
   min-height: 40px;
   padding: 0 1rem;
   border-radius: 999px;
-  background: rgba(103, 80, 164, 0.1);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--md-sys-color-primary);
+  border: 1px solid rgba(31, 39, 36, 0.08);
   text-decoration: none;
   font-weight: 700;
 }
@@ -130,8 +131,8 @@ body {
 .metric-card,
 .chart-card {
   border-radius: var(--shape-xl);
-  background: rgba(253, 247, 255, 0.84);
-  border: 1px solid rgba(122, 117, 127, 0.18);
+  background: rgba(251, 248, 242, 0.84);
+  border: 1px solid rgba(31, 39, 36, 0.08);
   box-shadow: var(--elevation-2);
   backdrop-filter: blur(14px);
 }
@@ -192,11 +193,11 @@ body {
 }
 
 .metric-card--temperature {
-  background: linear-gradient(180deg, rgba(233, 221, 255, 0.96), rgba(248, 243, 255, 0.92));
+  background: linear-gradient(180deg, rgba(219, 233, 228, 0.96), rgba(246, 244, 239, 0.92));
 }
 
 .metric-card--temperature.target {
-  background: linear-gradient(180deg, rgba(255, 218, 214, 0.96), rgba(255, 246, 245, 0.92));
+  background: linear-gradient(180deg, rgba(244, 220, 207, 0.96), rgba(250, 245, 241, 0.92));
 }
 
 .fleet-grid,
@@ -261,22 +262,22 @@ body {
 }
 
 .status-chip.online {
-  background: rgba(47, 111, 79, 0.12);
+  background: rgba(47, 108, 96, 0.12);
   color: #1f5f40;
 }
 
 .status-chip.stale {
-  background: rgba(255, 185, 114, 0.2);
-  color: #7c4f00;
+  background: rgba(212, 106, 58, 0.18);
+  color: #8f4a24;
 }
 
 .status-chip.offline {
-  background: rgba(186, 26, 26, 0.12);
+  background: rgba(178, 65, 59, 0.12);
   color: #8c0009;
 }
 
 .ghost-chip {
-  background: rgba(73, 69, 79, 0.08);
+  background: rgba(31, 39, 36, 0.05);
   color: var(--md-sys-color-on-surface-variant);
 }
 
@@ -286,8 +287,8 @@ body {
   margin: 1rem 0 1.15rem;
   padding: 0.95rem 1rem;
   border-radius: 20px;
-  border: 1px solid rgba(186, 26, 26, 0.18);
-  background: rgba(186, 26, 26, 0.06);
+  border: 1px solid rgba(178, 65, 59, 0.18);
+  background: rgba(178, 65, 59, 0.06);
   color: #8c0009;
 }
 
@@ -296,7 +297,7 @@ body {
 }
 
 .fault-banner.is-active {
-  box-shadow: 0 8px 22px rgba(186, 26, 26, 0.12);
+  box-shadow: 0 8px 22px rgba(178, 65, 59, 0.12);
 }
 
 .fault-banner__label {
@@ -325,7 +326,7 @@ body {
 }
 
 .temperature-metric.target {
-  background: rgba(255, 218, 214, 0.7);
+  background: rgba(244, 220, 207, 0.7);
 }
 
 .temperature-metric span,
@@ -370,18 +371,18 @@ body {
 }
 
 .state-badge.off {
-  background: rgba(73, 69, 79, 0.1);
-  color: #514c57;
+  background: rgba(31, 39, 36, 0.08);
+  color: #48524e;
 }
 
 .state-badge.unknown {
-  background: rgba(73, 69, 79, 0.08);
+  background: rgba(31, 39, 36, 0.06);
   color: var(--md-sys-color-on-surface-variant);
 }
 
 .chart-card {
   padding: 1rem;
-  background: linear-gradient(180deg, rgba(243, 237, 247, 0.88), rgba(253, 247, 255, 0.92));
+  background: linear-gradient(180deg, rgba(244, 239, 230, 0.88), rgba(251, 248, 242, 0.92));
 }
 
 .chart-card__header h4,
@@ -430,7 +431,7 @@ body {
   min-width: 170px;
   padding: 0.75rem 0.85rem;
   border-radius: 18px;
-  background: rgba(29, 27, 32, 0.92);
+  background: rgba(29, 36, 34, 0.94);
   color: var(--md-sys-color-inverse-on-surface);
   box-shadow: var(--elevation-3);
   pointer-events: none;
@@ -503,22 +504,22 @@ body {
 }
 
 .sensor-state.present {
-  background: rgba(47, 111, 79, 0.12);
+  background: rgba(47, 108, 96, 0.12);
   color: #1f5f40;
 }
 
 .sensor-state.stale {
-  background: rgba(255, 185, 114, 0.22);
-  color: #7c4f00;
+  background: rgba(212, 106, 58, 0.2);
+  color: #8f4a24;
 }
 
 .sensor-state.invalid {
-  background: rgba(186, 26, 26, 0.12);
+  background: rgba(178, 65, 59, 0.12);
   color: #8c0009;
 }
 
 .sensor-state.missing {
-  background: rgba(73, 69, 79, 0.08);
+  background: rgba(31, 39, 36, 0.06);
   color: var(--md-sys-color-on-surface-variant);
 }
 
@@ -526,9 +527,9 @@ body {
   margin: 0;
   padding: 1rem;
   border-radius: 24px;
-  background: #1f1b24;
-  color: #f5eff7;
-  font-family: "Cascadia Code", "Consolas", monospace;
+  background: #1d2422;
+  color: #f6f4ef;
+  font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
   font-size: 0.85rem;
   overflow: auto;
   max-height: 30rem;
@@ -569,7 +570,7 @@ body {
   margin: 0;
   padding: 0.85rem 1rem;
   border-radius: 16px;
-  background: rgba(186, 26, 26, 0.08);
+  background: rgba(178, 65, 59, 0.08);
   color: #8c0009;
   font-size: 0.92rem;
 }
@@ -580,7 +581,7 @@ body {
   min-height: 56px;
   padding: 0.95rem 1rem;
   border-radius: 18px;
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid rgba(31, 39, 36, 0.12);
   background: rgba(255, 255, 255, 0.88);
   color: var(--md-sys-color-on-surface);
   font: inherit;
@@ -602,8 +603,8 @@ body {
 .control-status-card {
   padding: 1rem;
   border-radius: 22px;
-  background: rgba(73, 69, 79, 0.06);
-  border: 1px solid rgba(122, 117, 127, 0.18);
+  background: rgba(31, 39, 36, 0.05);
+  border: 1px solid rgba(31, 39, 36, 0.1);
 }
 
 .control-status-card strong {
@@ -611,8 +612,8 @@ body {
 }
 
 .control-status-card.active {
-  background: rgba(47, 111, 79, 0.12);
-  border-color: rgba(47, 111, 79, 0.22);
+  background: rgba(47, 108, 96, 0.12);
+  border-color: rgba(47, 108, 96, 0.22);
 }
 
 .control-status-card.unknown {
@@ -646,8 +647,9 @@ button:disabled {
 }
 
 .ghost-button {
-  background: rgba(103, 80, 164, 0.1);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--md-sys-color-primary);
+  border: 1px solid rgba(31, 39, 36, 0.08);
 }
 
 .danger-button {
@@ -664,29 +666,29 @@ button:disabled {
 }
 
 .toggle-button.inactive {
-  background: rgba(73, 69, 79, 0.08);
+  background: rgba(31, 39, 36, 0.06);
   color: var(--md-sys-color-on-surface);
 }
 
 .toggle-button.unknown {
-  background: rgba(73, 69, 79, 0.06);
+  background: rgba(31, 39, 36, 0.05);
   color: var(--md-sys-color-on-surface-variant);
 }
 
 .toggle-button.heat.active {
-  background: linear-gradient(180deg, #ffb782, #f08632);
+  background: linear-gradient(180deg, #e48a60, #d46a3a);
 }
 
 .toggle-button.heat-off.active {
-  background: linear-gradient(180deg, #8a7c8f, #625b71);
+  background: linear-gradient(180deg, #7b8782, #66736d);
 }
 
 .toggle-button.cool.active {
-  background: linear-gradient(180deg, #5eb5ea, #00639b);
+  background: linear-gradient(180deg, #58a3d2, #3f86c6);
 }
 
 .toggle-button.cool-off.active {
-  background: linear-gradient(180deg, #7c8d97, #4b5963);
+  background: linear-gradient(180deg, #7b8782, #66736d);
 }
 
 .relay-list {
@@ -698,7 +700,7 @@ button:disabled {
   padding: 0.95rem 1rem;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(122, 117, 127, 0.18);
+  border: 1px solid rgba(31, 39, 36, 0.08);
 }
 
 .empty-state {
