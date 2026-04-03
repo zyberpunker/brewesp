@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://brewesp.local/schemas/fermentation-config.schema.json",
   "title": "brewesp fermentation_config",
-  "description": "Fermentation process configuration delivered over MQTT and cached locally on the ESP32. Current firmware actively validates and applies thermostat, sensor, and profile fields. The web service also publishes the alarms block, but current firmware runtime control still uses a fixed 30 second stale-sensor timeout and does not yet enforce the alarm values below.",
+  "description": "Fermentation process configuration delivered over MQTT and cached locally on the ESP32. Firmware_v2 is expected to validate and apply thermostat, sensor, profile, and alarm threshold fields locally. The alarms block is intended to drive local alert generation and MQTT alert topics that external systems such as Home Assistant can automate from.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -187,7 +187,7 @@
     },
     "alarms": {
       "type": "object",
-      "description": "Published and validated by the web service. Current firmware does not yet use these values for runtime control decisions.",
+      "description": "Published and validated by the web service. Firmware_v2 should use these values for local alert generation and MQTT alert publication. During rollout, some intermediate firmware builds may still ignore part of this block.",
       "additionalProperties": false,
       "required": [
         "deviation_c"
