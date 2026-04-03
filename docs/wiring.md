@@ -67,9 +67,9 @@ When the probes are connected for the first time:
 
 1. Connect only the `beer probe`.
 2. Boot BrewESP and open the device page in the web UI.
-3. Read the `Beer ROM` value from the `Probe mapping` card.
+3. Read the `Beer probe ROM` value from the device detail sensor status view.
 4. Disconnect power and connect the `chamber probe` as well.
-5. Boot again and read the `Chamber ROM` value.
+5. Boot again and read the `Chamber probe ROM` value from the same view.
 6. Store these ROMs in `system_config` later so the mapping stays deterministic
    even if probes are swapped or one probe is temporarily missing.
 

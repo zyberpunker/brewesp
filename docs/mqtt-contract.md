@@ -27,7 +27,9 @@ Assume `device_id = fermenter-01`.
 - `brewesp/fermenter-01/history/raw`
 - `brewesp/fermenter-01/config/desired`
 - `brewesp/fermenter-01/config/applied`
+- `brewesp/fermenter-01/system_config`
 - `brewesp/fermenter-01/command`
+- `brewesp/fermenter-01/discovery/kasa`
 - `brewesp/fermenter-01/event`
 
 ## Topic intent
@@ -218,6 +220,71 @@ Optional raw event stream for archival or analytics.
 
 This can initially be identical to `telemetry` and later be split if needed.
 
+### `system_config`
+
+Current implementation-specific retained JSON patch published by the web
+service.
+
+Important:
+
+- this is not the full bootstrap `system_config` document stored locally on the
+  ESP32
+- today it is used for output routing changes plus selected runtime settings
+  such as heartbeat interval and OTA fields
+- the firmware only applies the fields it understands and keeps the rest of the
+  locally stored bootstrap config unchanged
+
+Current payload shape:
+
+```json
+{
+  "device_id": "fermenter-01",
+  "heating": {
+    "driver": "kasa_local",
+    "host": "192.168.1.88",
+    "port": 9999,
+    "alias": "heater"
+  },
+  "cooling": {
+    "driver": "kasa_local",
+    "host": "192.168.1.89",
+    "port": 9999,
+    "alias": "fridge"
+  },
+  "heartbeat_interval_s": 60,
+  "ota": {
+    "enabled": true,
+    "channel": "stable",
+    "check_strategy": "manual",
+    "check_interval_s": 86400,
+    "manifest_url": "http://web.local/firmware/manifest/stable.json",
+    "ca_cert_fingerprint": "",
+    "allow_http": true
+  }
+}
+```
+
+### `discovery/kasa`
+
+Best-effort device-discovery results emitted by firmware after a
+`discover_kasa` command.
+
+Payload example:
+
+```json
+{
+  "device_id": "fermenter-01",
+  "result": {
+    "driver": "kasa_local",
+    "host": "192.168.1.88",
+    "port": 9999,
+    "alias": "heater",
+    "model": "KP105",
+    "is_on": false
+  }
+}
+```
+
 ### Sensor fault semantics
 
 - the controller publishes per-probe `present`, `valid`, and `stale` flags for
@@ -309,6 +376,14 @@ Wire-unit rule:
 - editors may use friendlier display units, but serialization must stay
   unambiguous on the wire
 
+Current implementation note:
+
+- the web service publishes and validates the `alarms` block
+- current firmware control logic applies thermostat, sensor, and profile fields
+  but does not yet use `alarms.deviation_c` or `alarms.sensor_stale_s` to drive
+  runtime decisions
+- stale-sensor shutdown is currently hard-coded to `30` seconds in firmware
+
 ### `config/applied`
 
 Published by the ESP32 after validation and activation of a config version.
@@ -343,6 +418,8 @@ Imperative actions that should not live inside retained config.
 
 Supported commands:
 
+- `set_output`
+- `discover_kasa`
 - `profile_pause`
 - `profile_resume`
 - `profile_release_hold`
@@ -355,6 +432,12 @@ Profile runtime commands are the active contract for profile execution control.
 For OTA commands, the requested channel may be provided either as
 `args.channel` or as a top-level `channel`. Firmware prefers `args.channel`
 when both are present.
+
+Current implementation notes:
+
+- `set_output` is used by the web UI for manual heating/cooling commands
+- `discover_kasa` asks the device to scan the local subnet and publish results
+  on `discovery/kasa`
 
 Examples:
 
@@ -433,6 +516,12 @@ Schema files:
 
 - `system_config`: [system-config.schema.json](C:\Users\ola\git\brewesp\docs\schemas\system-config.schema.json)
 - `fermentation_config`: [fermentation-config.schema.json](C:\Users\ola\git\brewesp\docs\schemas\fermentation-config.schema.json)
+
+Important distinction:
+
+- the schema file above describes the long-term local bootstrap document
+- the retained MQTT topic `<prefix>/<device_id>/system_config` currently carries
+  only a smaller update payload for routing and OTA-related fields
 
 Recommended provisioning flow:
 

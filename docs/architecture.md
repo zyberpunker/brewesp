@@ -10,7 +10,8 @@ Recommended first implementation choices:
 - Firmware: PlatformIO + Arduino framework for ESP32
 - Broker: Eclipse Mosquitto
 - Web backend: FastAPI
-- Web UI: server-rendered HTML templates + light JavaScript for charts/forms
+- Web UI: FastAPI-rendered pages plus an embedded React/Vite device-detail app
+  for richer charts and controls
 - Database: TimescaleDB on PostgreSQL
 - Local panel: `AZ-Touch MOD` touchscreen panel + optional hidden service button
 
@@ -18,8 +19,8 @@ Reasoning:
 
 - PlatformIO keeps firmware builds repeatable and supports ESP32 well.
 - FastAPI is quick to build against and works cleanly in Docker.
-- A server-rendered UI avoids introducing a second frontend build system too
-  early.
+- Most pages can stay server-rendered, while the richer device workflow can use
+  a small dedicated frontend bundle.
 - PostgreSQL is more than enough for low-rate telemetry history and config data.
 
 ## System overview
@@ -130,11 +131,15 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 - profile editor
 - run mode controls
 - alarm settings
+- output routing and relay discovery tools
 
 ### `MQTT bridge`
 
 - publish retained desired config
+- publish a small retained `system_config` patch for output routing and OTA
+  settings
 - subscribe to availability/heartbeat/state/telemetry/ack topics
+- subscribe to Kasa discovery results
 - write telemetry to database
 
 ### `history views`
@@ -143,6 +148,17 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 - temperature graph
 - relay activity graph
 - active profile progress
+
+### Current web implementation
+
+- `dashboard.html` provides the fleet overview page
+- `device_detail.html` boots a bundled React app for device-specific controls and
+  charts
+- the web service exposes API routes for fermentation-plan editing, output
+  routing, manual output commands, and profile commands
+- Kasa discovery results are ingested over MQTT and shown back in the device
+  routing workflow
+- the same service hosts the OTA manifest and firmware binary download
 
 ## Docker deployment shape
 
@@ -172,6 +188,7 @@ brewesp/
   services/
     web/
       app/
+      frontend/
       tests/
       Dockerfile
       requirements.txt
@@ -369,6 +386,13 @@ Rarely changed installation/configuration data:
 This should be stored locally on the ESP32 in NVS and managed primarily through
 a local onboarding/recovery API or captive portal. It should not depend on
 MQTT to become reachable.
+
+Current implementation note:
+
+- the web service also publishes a small retained MQTT `system_config` payload
+  for output routing and OTA-related fields
+- that payload is not the full local bootstrap document described in
+  `docs/schemas/system-config.schema.json`
 
 ### `fermentation_config`
 

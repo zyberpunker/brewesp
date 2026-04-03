@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://brewesp.local/schemas/system-config.schema.json",
   "title": "brewesp system_config",
-  "description": "Bootstrap and installation configuration stored locally on the ESP32.",
+  "description": "Long-term bootstrap and installation configuration stored locally on the ESP32. Current firmware persists and applies only a subset of this planned shape: Wi-Fi SSID/password plus recovery AP settings, MQTT host/port/client_id/credentials/topic_prefix, heartbeat interval, sensor GPIO/poll/ROMs, local_ui.enabled/headless_allowed, display.enabled/driver/i2c_address, buttons.enabled/up/down/select/back GPIOs, gpio/shelly/kasa outputs, and ota fields. The retained MQTT topic <prefix>/<device_id>/system_config is a smaller runtime update payload and does not use this full schema.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -543,6 +543,7 @@
     },
     "safety": {
       "type": "object",
+      "description": "Planned local safety tuning block. Not currently persisted or applied by firmware.",
       "additionalProperties": false,
       "properties": {
         "sensor_fault_shutdown": {
@@ -646,6 +647,7 @@
     },
     "output_generic_mqtt_relay": {
       "type": "object",
+      "description": "Planned output driver shape. Current firmware does not instantiate this driver yet.",
       "additionalProperties": false,
       "required": [
         "driver",
