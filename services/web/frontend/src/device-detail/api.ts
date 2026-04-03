@@ -84,8 +84,8 @@ export async function fetchOutputRouting(
 export async function updateOutputRouting(
   deviceId: string,
   payload: {
-    heating: { host: string; alias?: string };
-    cooling: { host: string; alias?: string };
+    heating: { driver: string; host: string; alias?: string };
+    cooling: { driver: string; host: string; alias?: string };
   },
 ): Promise<OutputRoutingPayload> {
   const response = await fetch(`/api/devices/${deviceId}/output-routing`, {
