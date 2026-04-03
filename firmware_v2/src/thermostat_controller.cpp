@@ -100,10 +100,45 @@ const ControllerState &ThermostatController::evaluate(const FermentationConfig &
   return state_;
 }
 
+void ThermostatController::syncTrackedState(OutputDriver &heating, OutputDriver &cooling) {
+  const DriverStatus heating_status = heating.status();
+  const DriverStatus cooling_status = cooling.status();
+  if (heating_status.known) {
+    heating_on_ = heating_status.on;
+  }
+  if (cooling_status.known) {
+    cooling_on_ = cooling_status.on;
+  }
+}
+
 void ThermostatController::apply(OutputDriver &heating, OutputDriver &cooling, uint32_t now_ms) {
+  syncTrackedState(heating, cooling);
   if (!state_.fault.isEmpty()) {
     forceOff(heating, cooling, now_ms);
     return;
+  }
+
+  if (state_.heating_command && cooling_on_) {
+    if (!cooling.setState(false)) {
+      state_.heating_command = false;
+      state_.controller_state = "fault";
+      state_.controller_reason = "cooling output shutoff failed";
+      state_.fault = "cooling output shutoff failed";
+      return;
+    }
+    cooling_on_ = false;
+    cooling_last_off_ms_ = now_ms;
+  }
+  if (state_.cooling_command && heating_on_) {
+    if (!heating.setState(false)) {
+      state_.cooling_command = false;
+      state_.controller_state = "fault";
+      state_.controller_reason = "heating output shutoff failed";
+      state_.fault = "heating output shutoff failed";
+      return;
+    }
+    heating_on_ = false;
+    heating_last_off_ms_ = now_ms;
   }
 
   if (state_.heating_command != heating_on_) {
@@ -141,6 +176,7 @@ const ControllerState &ThermostatController::state() const {
 }
 
 void ThermostatController::forceOff(OutputDriver &heating, OutputDriver &cooling, uint32_t now_ms) {
+  syncTrackedState(heating, cooling);
   state_.heating_command = false;
   state_.cooling_command = false;
   state_.automatic_control_active = false;

@@ -540,8 +540,10 @@ def _resolve_routing_relay(
         return relay
 
     relay.source_device_id = relay.source_device_id or device.id
+    previous_driver = relay.driver
     relay.driver = normalized_driver
-    relay.port = _default_port_for_driver(normalized_driver)
+    if previous_driver != normalized_driver or not relay.port:
+        relay.port = _default_port_for_driver(normalized_driver)
     if normalized_alias:
         relay.alias = normalized_alias
     return relay

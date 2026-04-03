@@ -19,6 +19,7 @@ class ThermostatController {
   const ControllerState &state() const;
 
  private:
+  void syncTrackedState(OutputDriver &heating, OutputDriver &cooling);
   void forceOff(OutputDriver &heating, OutputDriver &cooling, uint32_t now_ms);
 
   ControllerState state_;

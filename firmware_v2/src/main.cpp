@@ -48,6 +48,8 @@ bool g_output_command_pending = false;
 String g_pending_output_target;
 String g_pending_output_state;
 
+void publishState();
+
 String topicBase() {
   return g_system_config.mqtt.topic_prefix + "/" + g_system_config.device_id;
 }
@@ -95,6 +97,34 @@ void ensureOutputs() {
   if (!g_heating_output || !g_cooling_output) {
     rebuildOutputs();
   }
+}
+
+bool shouldAutoStartRecoveryAp(bool unprovisioned) {
+  if (!g_system_config.recovery_ap.enabled) {
+    return false;
+  }
+  if (unprovisioned && !g_system_config.recovery_ap.auto_start_when_unprovisioned) {
+    return false;
+  }
+  return true;
+}
+
+void publishStateIfConnected() {
+  if (g_mqtt_client.connected()) {
+    publishState();
+  }
+}
+
+bool shutOffForMutualExclusion(OutputDriver &output, const char *label) {
+  const DriverStatus status = output.status();
+  if (status.known && !status.on) {
+    return true;
+  }
+  if (output.setState(false)) {
+    return true;
+  }
+  Serial.printf("Refusing output handover because %s failed to turn off\n", label);
+  return false;
 }
 
 void startProvisioningMode(const String &reason, bool reset_wifi) {
@@ -313,15 +343,23 @@ void applyOutputCommand(const String &target, const String &state) {
 
   bool changed = false;
   if (target == "heating") {
+    if (turn_on && !shutOffForMutualExclusion(*g_cooling_output, "cooling")) {
+      g_heating_output->refresh();
+      g_cooling_output->refresh();
+      g_state_dirty = true;
+      publishStateIfConnected();
+      return;
+    }
     changed = g_heating_output->setState(turn_on);
-    if (turn_on) {
-      g_cooling_output->setState(false);
-    }
   } else if (target == "cooling") {
-    changed = g_cooling_output->setState(turn_on);
-    if (turn_on) {
-      g_heating_output->setState(false);
+    if (turn_on && !shutOffForMutualExclusion(*g_heating_output, "heating")) {
+      g_heating_output->refresh();
+      g_cooling_output->refresh();
+      g_state_dirty = true;
+      publishStateIfConnected();
+      return;
     }
+    changed = g_cooling_output->setState(turn_on);
   } else if (target == "all" && turn_off) {
     const bool heating_changed = g_heating_output->setState(false);
     const bool cooling_changed = g_cooling_output->setState(false);
@@ -336,9 +374,7 @@ void applyOutputCommand(const String &target, const String &state) {
   g_state_dirty = true;
   Serial.printf("Handled set_output target=%s state=%s changed=%s\n", target.c_str(), state.c_str(),
                 changed ? "true" : "false");
-  if (g_mqtt_client.connected()) {
-    publishState();
-  }
+  publishStateIfConnected();
 }
 
 void handleCommandMessage(const String &payload) {
@@ -508,15 +544,29 @@ void setup() {
   g_sensors.begin(g_system_config.sensors.onewire_gpio);
 
   const bool force_recovery = digitalRead(kServiceButtonPin) == LOW;
-  if (!g_system_config.valid || force_recovery) {
+  if (force_recovery) {
     ensureOutputs();
-    startProvisioningMode(force_recovery ? "service button held at boot" : "missing system_config", true);
+    startProvisioningMode("service button held at boot", true);
+    return;
+  }
+
+  if (!g_system_config.valid) {
+    ensureOutputs();
+    if (shouldAutoStartRecoveryAp(true)) {
+      startProvisioningMode("missing system_config", true);
+    } else {
+      Serial.println("Missing system_config but recovery AP auto-start is disabled");
+    }
     return;
   }
 
   if (!connectWifiBlocking(15000)) {
     ensureOutputs();
-    startProvisioningMode("initial wifi connection failed", true);
+    if (shouldAutoStartRecoveryAp(false)) {
+      startProvisioningMode("initial wifi connection failed", true);
+    } else {
+      Serial.println("Initial Wi-Fi connection failed and recovery AP is disabled");
+    }
     return;
   }
   ensureOutputs();
