@@ -5,18 +5,36 @@
 
 #include <memory>
 
+#include "support/Logger.h"
+
 namespace {
 const uint16_t kKasaPort = 9999;
 const uint8_t kLegacyInitialKey = 171;
+constexpr uint32_t kProgressLogIntervalHosts = 128;
+
+uint32_t ipToUint32(const IPAddress& ip) {
+    return (static_cast<uint32_t>(ip[0]) << 24) | (static_cast<uint32_t>(ip[1]) << 16)
+        | (static_cast<uint32_t>(ip[2]) << 8) | static_cast<uint32_t>(ip[3]);
+}
+
+IPAddress uint32ToIp(uint32_t value) {
+    return IPAddress(
+        static_cast<uint8_t>((value >> 24) & 0xFF),
+        static_cast<uint8_t>((value >> 16) & 0xFF),
+        static_cast<uint8_t>((value >> 8) & 0xFF),
+        static_cast<uint8_t>(value & 0xFF));
+}
 }
 
 bool KasaDiscovery::discover(DeviceCallback callback, uint32_t timeoutMs) {
     if (WiFi.status() != WL_CONNECTED) {
+        LOG_DEBUG_MSG("[kasa-discovery] skipped because wifi is disconnected");
         return false;
     }
 
     WiFiUDP udp;
     if (!udp.begin(0)) {
+        LOG_WARN_MSG("[kasa-discovery] failed to open udp socket");
         return false;
     }
 
@@ -49,18 +67,41 @@ bool KasaDiscovery::discover(DeviceCallback callback, uint32_t timeoutMs) {
         network[1] | static_cast<uint8_t>(~subnetMask[1]),
         network[2] | static_cast<uint8_t>(~subnetMask[2]),
         network[3] | static_cast<uint8_t>(~subnetMask[3]));
+    const uint32_t networkValue = ipToUint32(network);
+    const uint32_t broadcastValue = ipToUint32(broadcast);
+    const uint32_t hostCount =
+        broadcastValue > networkValue ? broadcastValue - networkValue - 1 : 0;
+
+    LOG_DEBUG(
+        "[kasa-discovery] start local=%s mask=%s network=%s broadcast=%s hosts=%lu timeout_ms=%lu\r\n",
+        localIp.toString().c_str(),
+        subnetMask.toString().c_str(),
+        network.toString().c_str(),
+        broadcast.toString().c_str(),
+        static_cast<unsigned long>(hostCount),
+        static_cast<unsigned long>(timeoutMs));
+
     sendDiscoveryPacket(udp, packet.get(), payloadLength + 4, broadcast);
 
-    for (uint16_t host = 1; host < 255; ++host) {
-        IPAddress candidate(network[0], network[1], network[2], host);
-        if (candidate == localIp || candidate == network || candidate == broadcast) {
+    uint32_t probedHosts = 0;
+    for (uint32_t candidateValue = networkValue + 1; candidateValue < broadcastValue; ++candidateValue) {
+        IPAddress candidate = uint32ToIp(candidateValue);
+        if (candidate == localIp) {
             continue;
         }
         sendDiscoveryPacket(udp, packet.get(), payloadLength + 4, candidate);
+        ++probedHosts;
+        if (probedHosts % kProgressLogIntervalHosts == 0) {
+            LOG_DEBUG(
+                "[kasa-discovery] progress probed=%lu/%lu\r\n",
+                static_cast<unsigned long>(probedHosts),
+                static_cast<unsigned long>(hostCount));
+        }
         delay(3);
     }
 
     bool found = false;
+    uint32_t foundCount = 0;
     String seenHosts = ";";
     const uint32_t startedAt = millis();
     while (millis() - startedAt < timeoutMs) {
@@ -101,7 +142,21 @@ bool KasaDiscovery::discover(DeviceCallback callback, uint32_t timeoutMs) {
         payload += "}";
         callback(payload);
         found = true;
+        ++foundCount;
+        LOG_DEBUG(
+            "[kasa-discovery] found host=%s alias=%s model=%s state=%s\r\n",
+            host.c_str(),
+            alias.c_str(),
+            model.c_str(),
+            relayState == 1 ? "on" : relayState == 0 ? "off" : "unknown");
     }
+
+    LOG_DEBUG(
+        "[kasa-discovery] complete probed=%lu/%lu found=%lu wait_ms=%lu\r\n",
+        static_cast<unsigned long>(probedHosts),
+        static_cast<unsigned long>(hostCount),
+        static_cast<unsigned long>(foundCount),
+        static_cast<unsigned long>(millis() - startedAt));
 
     udp.stop();
     return found;

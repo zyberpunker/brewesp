@@ -17,6 +17,7 @@ export type OutputAssignment = {
   driver: string;
   host: string;
   port: number;
+  switch_id: number;
   alias: string;
 };
 
@@ -25,6 +26,7 @@ export type DiscoveredRelay = {
   alias: string | null;
   driver: string;
   port: number;
+  switch_id: number;
   model: string | null;
   is_on: boolean | null;
   last_seen_at: string | null;

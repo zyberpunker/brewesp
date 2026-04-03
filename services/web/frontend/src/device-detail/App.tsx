@@ -29,7 +29,7 @@ import {
   fetchLiveState,
   fetchOutputRouting,
   fetchTelemetry,
-  scanKasaRelays,
+  scanOutputRelays,
   sendOutputCommand,
   sendProfileCommand,
   updateOutputRouting,
@@ -38,6 +38,7 @@ import {
 import { TemperatureChart } from "@/device-detail/TemperatureChart";
 import type {
   DeviceDetailBootstrap,
+  DiscoveredRelay,
   OutputRoutingPayload,
   FermentationPlan,
   TelemetryWindow,
@@ -104,13 +105,77 @@ type FermentationSetupDraft = {
 };
 
 type OutputRoutingDraft = {
-  heating_selected_host: string;
+  heating_selected_relay: string;
   heating_manual_host: string;
+  heating_manual_driver: string;
   heating_alias: string;
-  cooling_selected_host: string;
+  cooling_selected_relay: string;
   cooling_manual_host: string;
+  cooling_manual_driver: string;
   cooling_alias: string;
 };
+
+type RelayScanPhase = "idle" | "requesting" | "waiting" | "completed" | "error";
+
+const KASA_SCAN_WINDOW_MS = 3000;
+const SHELLY_SCAN_WINDOW_MS = 15000;
+const DISCOVERY_COMPLETE_WAIT_MS = 20000;
+
+function relayOptionKey(relay: DiscoveredRelay) {
+  return `${relay.driver}:${relay.host}:${relay.switch_id}`;
+}
+
+function defaultPortForDriver(driver: string) {
+  return driver === "shelly_http_rpc" ? 80 : 9999;
+}
+
+function relayDisplayName(relay: DiscoveredRelay) {
+  return relay.alias || relay.host;
+}
+
+function relayDriverLabel(driver: string) {
+  return driver === "shelly_http_rpc" ? "Shelly" : "Kasa";
+}
+
+function formatDriverDiscoveryCount(
+  label: "Kasa" | "Shelly",
+  count: number,
+  inProgress: boolean,
+) {
+  const noun = count === 1 ? "device" : "devices";
+  if (inProgress) {
+    return count > 0
+      ? `Found ${count} ${label} ${noun} so far.`
+      : `No ${label} devices found yet.`;
+  }
+  return count > 0
+    ? `Found ${count} ${label} ${noun}.`
+    : `Found no ${label} devices.`;
+}
+
+function formatRelayFoundLine(relay: DiscoveredRelay) {
+  const details = [relayDisplayName(relay), `IP ${relay.host}`];
+  if (relay.model) {
+    details.push(relay.model);
+  }
+  if (relay.switch_id > 0) {
+    details.push(`switch ${relay.switch_id}`);
+  }
+  return details.join(" · ");
+}
+
+function formatScanSummary(newCount: number, refreshedCount: number) {
+  if (newCount > 0 && refreshedCount > 0) {
+    return `Scan complete. Found ${newCount} new outputs and refreshed ${refreshedCount} known outputs.`;
+  }
+  if (newCount > 0) {
+    return `Scan complete. Found ${newCount} new outputs.`;
+  }
+  if (refreshedCount > 0) {
+    return `Scan complete. Refreshed ${refreshedCount} known outputs.`;
+  }
+  return "Scan complete.";
+}
 
 const TELEMETRY_WINDOWS: Array<{
   value: TelemetryWindow;
@@ -179,16 +244,48 @@ function buildDefaultProfilePlan(name: string, setpoint: number) {
 function buildOutputRoutingDraft(
   routing: OutputRoutingPayload,
 ): OutputRoutingDraft {
-  const relayHosts = new Set(routing.discovered_relays.map((relay) => relay.host));
+  const relayKeys = new Set(
+    routing.discovered_relays.map((relay) => relayOptionKey(relay)),
+  );
+  const heatingKey = relayOptionKey({
+    host: routing.heating.host ?? "",
+    alias: routing.heating.alias ?? "",
+    driver: routing.heating.driver,
+    port: routing.heating.port,
+    switch_id: routing.heating.switch_id,
+    model: null,
+    is_on: null,
+    last_seen_at: null,
+    last_seen_label: "",
+  });
+  const coolingKey = relayOptionKey({
+    host: routing.cooling.host ?? "",
+    alias: routing.cooling.alias ?? "",
+    driver: routing.cooling.driver,
+    port: routing.cooling.port,
+    switch_id: routing.cooling.switch_id,
+    model: null,
+    is_on: null,
+    last_seen_at: null,
+    last_seen_label: "",
+  });
   const heatingHost = routing.heating.host ?? "";
   const coolingHost = routing.cooling.host ?? "";
 
   return {
-    heating_selected_host: relayHosts.has(heatingHost) ? heatingHost : "",
-    heating_manual_host: relayHosts.has(heatingHost) ? "" : heatingHost,
+    heating_selected_relay: relayKeys.has(heatingKey) ? heatingKey : "",
+    heating_manual_host: relayKeys.has(heatingKey) ? "" : heatingHost,
+    heating_manual_driver:
+      routing.heating.driver && routing.heating.driver !== "none"
+        ? routing.heating.driver
+        : "kasa_local",
     heating_alias: routing.heating.alias ?? "",
-    cooling_selected_host: relayHosts.has(coolingHost) ? coolingHost : "",
-    cooling_manual_host: relayHosts.has(coolingHost) ? "" : coolingHost,
+    cooling_selected_relay: relayKeys.has(coolingKey) ? coolingKey : "",
+    cooling_manual_host: relayKeys.has(coolingKey) ? "" : coolingHost,
+    cooling_manual_driver:
+      routing.cooling.driver && routing.cooling.driver !== "none"
+        ? routing.cooling.driver
+        : "kasa_local",
     cooling_alias: routing.cooling.alias ?? "",
   };
 }
@@ -338,6 +435,11 @@ export function DeviceDetailApp({
   const [routingDraft, setRoutingDraft] = useState<OutputRoutingDraft | null>(null);
   const [routingError, setRoutingError] = useState<string | null>(null);
   const [isRoutingDirty, setIsRoutingDirty] = useState(false);
+  const [relayScanPhase, setRelayScanPhase] = useState<RelayScanPhase>("idle");
+  const [relayScanStartedAt, setRelayScanStartedAt] = useState<number | null>(null);
+  const [relayScanBaselineKeys, setRelayScanBaselineKeys] = useState<string[]>([]);
+  const [relayScanSummary, setRelayScanSummary] = useState<string | null>(null);
+  const [relayScanTick, setRelayScanTick] = useState<number>(Date.now());
 
   const liveQuery = useQuery({
     queryKey: ["device-live", deviceId],
@@ -360,13 +462,147 @@ export function DeviceDetailApp({
     queryKey: ["device-output-routing", deviceId],
     queryFn: () => fetchOutputRouting(deviceId),
     enabled: isRoutingOpen,
-    refetchInterval: isRoutingOpen ? 5000 : false,
+    refetchInterval: !isRoutingOpen ? false : relayScanPhase === "waiting" ? 1000 : 5000,
   });
 
   const live = liveQuery.data;
   const telemetry = telemetryQuery.data ?? [];
   const fermentationPlan = fermentationPlanQuery.data;
   const retainedTarget = fermentationPlan?.thermostat?.setpoint_c;
+  const discoveredRelays = outputRoutingQuery.data?.discovered_relays ?? [];
+  const relayScanElapsedMs = relayScanStartedAt
+    ? Math.max(0, relayScanTick - relayScanStartedAt)
+    : 0;
+  const relayScanBaselineSet = useMemo(
+    () => new Set(relayScanBaselineKeys),
+    [relayScanBaselineKeys],
+  );
+  const relayScanFreshRelays = useMemo(() => {
+    if (!relayScanStartedAt) {
+      return [];
+    }
+
+    return discoveredRelays.filter((relay) => {
+      if (!relay.last_seen_at) {
+        return false;
+      }
+
+      const seenAt = Date.parse(relay.last_seen_at);
+      return Number.isFinite(seenAt) && seenAt >= relayScanStartedAt - 2000;
+    });
+  }, [discoveredRelays, relayScanStartedAt]);
+  const relayScanNewRelays = useMemo(
+    () =>
+      relayScanFreshRelays.filter(
+        (relay) => !relayScanBaselineSet.has(relayOptionKey(relay)),
+      ),
+    [relayScanBaselineSet, relayScanFreshRelays],
+  );
+  const relayScanRefreshedRelays = useMemo(
+    () =>
+      relayScanFreshRelays.filter((relay) =>
+        relayScanBaselineSet.has(relayOptionKey(relay)),
+      ),
+    [relayScanBaselineSet, relayScanFreshRelays],
+  );
+  const relayScanFreshKasaRelays = useMemo(
+    () => relayScanFreshRelays.filter((relay) => relay.driver !== "shelly_http_rpc"),
+    [relayScanFreshRelays],
+  );
+  const relayScanFreshShellyRelays = useMemo(
+    () => relayScanFreshRelays.filter((relay) => relay.driver === "shelly_http_rpc"),
+    [relayScanFreshRelays],
+  );
+  const relayScanStage = useMemo(() => {
+    if (relayScanPhase === "requesting") {
+      return "requesting";
+    }
+    if (relayScanPhase === "waiting") {
+      if (relayScanElapsedMs < KASA_SCAN_WINDOW_MS) {
+        return "kasa";
+      }
+      if (relayScanElapsedMs < DISCOVERY_COMPLETE_WAIT_MS) {
+        return "shelly";
+      }
+    }
+    if (relayScanPhase === "completed") {
+      return "complete";
+    }
+    if (relayScanPhase === "error") {
+      return "error";
+    }
+    return "idle";
+  }, [relayScanElapsedMs, relayScanPhase]);
+  const relayScanLogLines = useMemo(() => {
+    if (relayScanPhase === "idle") {
+      return [];
+    }
+    if (relayScanPhase === "requesting") {
+      return ["Sending discovery command to the controller over MQTT."];
+    }
+    if (relayScanPhase === "error") {
+      return [relayScanSummary ?? "Failed to request output discovery."];
+    }
+
+    const lines: string[] = [];
+    if (!live.mqtt_connected) {
+      lines.push(
+        "Device is currently disconnected from MQTT. Discovery replies may not arrive until it reconnects.",
+      );
+    }
+
+    if (relayScanPhase === "waiting" && relayScanElapsedMs < KASA_SCAN_WINDOW_MS) {
+      lines.push("Scanning network for Kasa devices...");
+      lines.push(
+        formatDriverDiscoveryCount(
+          "Kasa",
+          relayScanFreshKasaRelays.length,
+          true,
+        ),
+      );
+      return lines;
+    }
+
+    lines.push(
+      formatDriverDiscoveryCount("Kasa", relayScanFreshKasaRelays.length, false),
+    );
+
+    if (relayScanPhase === "waiting") {
+      lines.push("Scanning network for Shelly devices...");
+      lines.push(
+        formatDriverDiscoveryCount(
+          "Shelly",
+          relayScanFreshShellyRelays.length,
+          true,
+        ),
+      );
+      return lines;
+    }
+
+    lines.push(
+      formatDriverDiscoveryCount("Shelly", relayScanFreshShellyRelays.length, false),
+    );
+    if (relayScanFreshRelays.length === 0) {
+      lines.push("No new discovery replies arrived in this scan.");
+    }
+    return lines;
+  }, [
+    live.mqtt_connected,
+    relayScanElapsedMs,
+    relayScanFreshKasaRelays.length,
+    relayScanFreshRelays.length,
+    relayScanFreshShellyRelays.length,
+    relayScanPhase,
+    relayScanSummary,
+  ]);
+
+  const resetRelayScanFeedback = () => {
+    setRelayScanPhase("idle");
+    setRelayScanStartedAt(null);
+    setRelayScanBaselineKeys([]);
+    setRelayScanSummary(null);
+    setRelayScanTick(Date.now());
+  };
 
   useEffect(() => {
     if (!isDraftTargetDirty) {
@@ -405,6 +641,56 @@ export function DeviceDetailApp({
       setRoutingDraft(buildOutputRoutingDraft(outputRoutingQuery.data));
     }
   }, [isRoutingDirty, isRoutingOpen, outputRoutingQuery.data]);
+
+  useEffect(() => {
+    if (relayScanPhase !== "waiting") {
+      return;
+    }
+
+    setRelayScanTick(Date.now());
+    const intervalId = window.setInterval(() => {
+      setRelayScanTick(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [relayScanPhase]);
+
+  useEffect(() => {
+    if (relayScanPhase !== "waiting" || !relayScanStartedAt) {
+      return;
+    }
+
+    const fallbackSummary =
+      relayScanFreshRelays.length > 0
+        ? formatScanSummary(relayScanNewRelays.length, relayScanRefreshedRelays.length)
+        : discoveredRelays.length > 0
+          ? `No fresh discovery replies arrived within ${DISCOVERY_COMPLETE_WAIT_MS / 1000} seconds. Showing ${discoveredRelays.length} known outputs from earlier scans.`
+          : `No fresh Kasa or Shelly replies arrived within ${DISCOVERY_COMPLETE_WAIT_MS / 1000} seconds.`;
+    const remainingMs = Math.max(
+      0,
+      DISCOVERY_COMPLETE_WAIT_MS - (Date.now() - relayScanStartedAt),
+    );
+
+    if (remainingMs === 0) {
+      setRelayScanPhase("completed");
+      setRelayScanSummary(fallbackSummary);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setRelayScanPhase("completed");
+      setRelayScanSummary(fallbackSummary);
+    }, remainingMs);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    discoveredRelays.length,
+    relayScanFreshRelays.length,
+    relayScanNewRelays.length,
+    relayScanPhase,
+    relayScanRefreshedRelays.length,
+    relayScanStartedAt,
+  ]);
 
   const refreshQueries = async () => {
     await Promise.all([
@@ -509,18 +795,35 @@ export function DeviceDetailApp({
   });
   const outputRoutingMutation = useMutation({
     mutationFn: (draft: OutputRoutingDraft) => {
-      const heatingHost =
-        draft.heating_manual_host.trim() || draft.heating_selected_host.trim();
-      const coolingHost =
-        draft.cooling_manual_host.trim() || draft.cooling_selected_host.trim();
+      const discoveredRelays = outputRoutingQuery.data?.discovered_relays ?? [];
+      const heatingRelay = discoveredRelays.find(
+        (relay) => relayOptionKey(relay) === draft.heating_selected_relay,
+      );
+      const coolingRelay = discoveredRelays.find(
+        (relay) => relayOptionKey(relay) === draft.cooling_selected_relay,
+      );
+
+      const heatingHost = draft.heating_manual_host.trim() || heatingRelay?.host || "";
+      const coolingHost = draft.cooling_manual_host.trim() || coolingRelay?.host || "";
+
+      const heatingDriver =
+        heatingRelay?.driver || draft.heating_manual_driver || "kasa_local";
+      const coolingDriver =
+        coolingRelay?.driver || draft.cooling_manual_driver || "kasa_local";
 
       return updateOutputRouting(deviceId, {
         heating: {
           host: heatingHost,
+          driver: heatingDriver,
+          port: heatingRelay?.port ?? defaultPortForDriver(heatingDriver),
+          switch_id: heatingRelay?.switch_id ?? 0,
           alias: draft.heating_alias.trim(),
         },
         cooling: {
           host: coolingHost,
+          driver: coolingDriver,
+          port: coolingRelay?.port ?? defaultPortForDriver(coolingDriver),
+          switch_id: coolingRelay?.switch_id ?? 0,
           alias: draft.cooling_alias.trim(),
         },
       });
@@ -528,11 +831,32 @@ export function DeviceDetailApp({
     onSettled: refreshQueries,
   });
   const scanRelaysMutation = useMutation({
-    mutationFn: () => scanKasaRelays(deviceId),
+    mutationFn: () => scanOutputRelays(deviceId),
+    onMutate: () => {
+      const startedAt = Date.now();
+      setRelayScanPhase("requesting");
+      setRelayScanStartedAt(startedAt);
+      setRelayScanBaselineKeys(discoveredRelays.map((relay) => relayOptionKey(relay)));
+      setRelayScanTick(startedAt);
+      setRelayScanSummary("Sending discovery command to the controller over MQTT.");
+    },
     onSuccess: async () => {
+      setRelayScanPhase("waiting");
+      setRelayScanSummary(
+        live.mqtt_connected
+          ? "Discovery started. The controller scans Kasa first, then Shelly devices."
+          : "Scan requested, but the device is currently disconnected from MQTT. Fresh discovery replies may not arrive until it reconnects.",
+      );
       await queryClient.invalidateQueries({
         queryKey: ["device-output-routing", deviceId],
       });
+      await outputRoutingQuery.refetch();
+    },
+    onError: (error) => {
+      setRelayScanPhase("error");
+      setRelayScanSummary(
+        error instanceof Error ? error.message : "Failed to request output discovery.",
+      );
     },
   });
 
@@ -540,6 +864,16 @@ export function DeviceDetailApp({
   const canAdjustTarget = fermentationPlan?.mode === "thermostat";
   const profilePhase = formatRuntimePhase(profileRuntime?.phase);
   const activeTarget = clampTarget(draftTarget);
+  const heatingBackendDescription =
+    typeof live.last_payload?.["heating_desc"] === "string"
+      ? live.last_payload["heating_desc"]
+      : null;
+  const coolingBackendDescription =
+    typeof live.last_payload?.["cooling_desc"] === "string"
+      ? live.last_payload["cooling_desc"]
+      : null;
+  const heatingOutputMissing = heatingBackendDescription === "missing";
+  const coolingOutputMissing = coolingBackendDescription === "missing";
   const runtimeTone =
     live.fault != null
       ? "fault"
@@ -563,6 +897,12 @@ export function DeviceDetailApp({
   const telemetryWindowDescription =
     TELEMETRY_WINDOWS.find((option) => option.value === telemetryWindow)?.description ??
     "All available history";
+  const relayScanButtonLabel =
+    relayScanPhase === "requesting"
+      ? "Sending scan..."
+      : relayScanPhase === "waiting"
+        ? "Scanning..."
+        : "Scan network";
 
   useEffect(() => {
     if (
@@ -600,7 +940,9 @@ export function DeviceDetailApp({
 
       if (isRoutingOpen && !isRoutingPending) {
         setIsRoutingOpen(false);
+        setIsRoutingDirty(false);
         setRoutingError(null);
+        resetRelayScanFeedback();
       }
     };
 
@@ -733,6 +1075,7 @@ export function DeviceDetailApp({
       }
       setIsRoutingDirty(false);
       setRoutingError(null);
+      resetRelayScanFeedback();
       setIsRoutingOpen(true);
     });
   };
@@ -810,6 +1153,7 @@ export function DeviceDetailApp({
       onSuccess: () => {
         setIsRoutingDirty(false);
         setIsRoutingOpen(false);
+        resetRelayScanFeedback();
       },
       onError: (error) => {
         setRoutingError(
@@ -1030,7 +1374,7 @@ export function DeviceDetailApp({
                   tone="heat"
                   data-active={live.heating_state === "on"}
                   onClick={() => outputMutation.mutate("heating_on")}
-                  disabled={outputMutation.isPending}
+                  disabled={outputMutation.isPending || heatingOutputMissing}
                 >
                   <Flame className="size-4" />
                   Heat on
@@ -1038,7 +1382,7 @@ export function DeviceDetailApp({
                 <Button
                   tone="heat"
                   onClick={() => outputMutation.mutate("heating_off")}
-                  disabled={outputMutation.isPending}
+                  disabled={outputMutation.isPending || heatingOutputMissing}
                 >
                   <Power className="size-4" />
                   Heat off
@@ -1047,7 +1391,7 @@ export function DeviceDetailApp({
                   tone="cool"
                   data-active={live.cooling_state === "on"}
                   onClick={() => outputMutation.mutate("cooling_on")}
-                  disabled={outputMutation.isPending}
+                  disabled={outputMutation.isPending || coolingOutputMissing}
                 >
                   <Snowflake className="size-4" />
                   Cool on
@@ -1055,12 +1399,23 @@ export function DeviceDetailApp({
                 <Button
                   tone="cool"
                   onClick={() => outputMutation.mutate("cooling_off")}
-                  disabled={outputMutation.isPending}
+                  disabled={outputMutation.isPending || coolingOutputMissing}
                 >
                   <Power className="size-4" />
                   Cool off
                 </Button>
               </div>
+              <p className="text-sm leading-6 text-[var(--muted)]">
+                Direct output actions now suspend automatic control on the ESP for about 2 minutes.
+                {heatingOutputMissing || coolingOutputMissing
+                  ? ` ${[
+                      heatingOutputMissing ? "Heating is not configured on the controller." : null,
+                      coolingOutputMissing ? "Cooling is not configured on the controller." : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}`
+                  : ""}
+              </p>
 
               <div className="grid gap-2">
                 {profileRuntime?.paused ? (
@@ -1612,6 +1967,7 @@ export function DeviceDetailApp({
                   setIsRoutingOpen(false);
                   setIsRoutingDirty(false);
                   setRoutingError(null);
+                  resetRelayScanFeedback();
                 }
               }}
             />
@@ -1634,8 +1990,8 @@ export function DeviceDetailApp({
                       Relay assignment for {deviceId}
                     </h2>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
-                      Assign discovered Kasa relays, override with a manual host, or
-                      remove routing for heating and cooling.
+                      Assign discovered Kasa or Shelly outputs, override with a
+                      manual host, or remove routing for heating and cooling.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -1644,7 +2000,7 @@ export function DeviceDetailApp({
                       onClick={() => scanRelaysMutation.mutate()}
                       disabled={isRoutingPending}
                     >
-                      Scan Kasa
+                      {relayScanButtonLabel}
                     </Button>
                     <Button
                       variant="secondary"
@@ -1652,6 +2008,7 @@ export function DeviceDetailApp({
                         setIsRoutingOpen(false);
                         setIsRoutingDirty(false);
                         setRoutingError(null);
+                        resetRelayScanFeedback();
                       }}
                       disabled={isRoutingPending}
                     >
@@ -1668,6 +2025,112 @@ export function DeviceDetailApp({
                   </div>
                 ) : routingDraft ? (
                   <>
+                    {relayScanPhase !== "idle" ? (
+                      <section className="md:col-span-2 rounded-[24px] border border-black/8 bg-[var(--surface-strong)] px-4 py-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[var(--accent)]">
+                              Scan activity
+                            </p>
+                            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                              {relayScanSummary}
+                            </p>
+                          </div>
+                          <Badge
+                            tone={
+                              relayScanPhase === "completed"
+                                ? "online"
+                                : relayScanPhase === "error"
+                                  ? "fault"
+                                  : "neutral"
+                            }
+                          >
+                            {relayScanStage === "requesting"
+                              ? "Sending"
+                              : relayScanStage === "kasa"
+                                ? "Kasa"
+                                : relayScanStage === "shelly"
+                                  ? "Shelly"
+                                  : relayScanStage === "complete"
+                                    ? "Complete"
+                                    : "Error"}
+                          </Badge>
+                        </div>
+                        {relayScanLogLines.length > 0 ? (
+                          <div className="mt-3 grid gap-2">
+                            {relayScanLogLines.map((line, index) => (
+                              <p
+                                key={`scan-line-${index}`}
+                                className="rounded-[18px] bg-white/65 px-4 py-3 text-sm leading-6 text-[var(--muted)]"
+                              >
+                                {line}
+                              </p>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                          {(["kasa_local", "shelly_http_rpc"] as const).map((driver) => {
+                            const relays =
+                              driver === "shelly_http_rpc"
+                                ? relayScanFreshShellyRelays
+                                : relayScanFreshKasaRelays;
+                            const label = relayDriverLabel(driver);
+
+                            return (
+                              <div
+                                key={`scan-group-${driver}`}
+                                className="rounded-[20px] bg-white/70 px-4 py-3 text-sm"
+                              >
+                                <p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">
+                                  {label} devices found in this scan
+                                </p>
+                                {relays.length > 0 ? (
+                                  <div className="mt-2 grid gap-2">
+                                    {relays.map((relay) => {
+                                      const isNewRelay = relayScanNewRelays.some(
+                                        (candidate) =>
+                                          relayOptionKey(candidate) === relayOptionKey(relay),
+                                      );
+
+                                      return (
+                                        <div
+                                          key={`scan-${relayOptionKey(relay)}`}
+                                          className="rounded-[16px] bg-[var(--surface-strong)] px-3 py-3"
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <strong className="text-[var(--ink)]">
+                                              {relayDisplayName(relay)}
+                                            </strong>
+                                            <span className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--accent)]">
+                                              {isNewRelay ? "New" : "Refreshed"}
+                                            </span>
+                                          </div>
+                                          <p className="mt-1 text-[var(--muted)]">
+                                            {formatRelayFoundLine(relay)}
+                                          </p>
+                                          <p className="mt-1 text-[var(--muted)]">
+                                            {relay.is_on === true
+                                              ? "On"
+                                              : relay.is_on === false
+                                                ? "Off"
+                                                : "Unknown"}{" "}
+                                            · seen {relay.last_seen_label}
+                                          </p>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <p className="mt-2 text-[var(--muted)]">
+                                    None yet.
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    ) : null}
                     <section className="grid gap-4">
                       <p className="text-xs font-bold uppercase tracking-[0.18em] text-[var(--accent)]">
                         Heating output
@@ -1676,10 +2139,10 @@ export function DeviceDetailApp({
                         Discovered relay
                         <select
                           className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
-                          value={routingDraft.heating_selected_host}
+                          value={routingDraft.heating_selected_relay}
                           onChange={(event) => {
                             updateRoutingField(
-                              "heating_selected_host",
+                              "heating_selected_relay",
                               event.target.value,
                             );
                             updateRoutingField("heating_manual_host", "");
@@ -1687,7 +2150,10 @@ export function DeviceDetailApp({
                         >
                           <option value="">None</option>
                           {(outputRoutingQuery.data?.discovered_relays ?? []).map((relay) => (
-                            <option key={`heating-${relay.host}`} value={relay.host}>
+                            <option
+                              key={`heating-${relayOptionKey(relay)}`}
+                              value={relayOptionKey(relay)}
+                            >
                               {(relay.alias || relay.host) +
                                 (relay.model ? ` · ${relay.model}` : "")}
                             </option>
@@ -1707,10 +2173,23 @@ export function DeviceDetailApp({
                               event.target.value,
                             );
                             if (event.target.value.trim()) {
-                              updateRoutingField("heating_selected_host", "");
+                              updateRoutingField("heating_selected_relay", "");
                             }
                           }}
                         />
+                      </label>
+                      <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
+                        Manual driver
+                        <select
+                          className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+                          value={routingDraft.heating_manual_driver}
+                          onChange={(event) =>
+                            updateRoutingField("heating_manual_driver", event.target.value)
+                          }
+                        >
+                          <option value="kasa_local">Kasa local</option>
+                          <option value="shelly_http_rpc">Shelly local</option>
+                        </select>
                       </label>
                       <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
                         Alias override
@@ -1734,10 +2213,10 @@ export function DeviceDetailApp({
                         Discovered relay
                         <select
                           className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
-                          value={routingDraft.cooling_selected_host}
+                          value={routingDraft.cooling_selected_relay}
                           onChange={(event) => {
                             updateRoutingField(
-                              "cooling_selected_host",
+                              "cooling_selected_relay",
                               event.target.value,
                             );
                             updateRoutingField("cooling_manual_host", "");
@@ -1745,7 +2224,10 @@ export function DeviceDetailApp({
                         >
                           <option value="">None</option>
                           {(outputRoutingQuery.data?.discovered_relays ?? []).map((relay) => (
-                            <option key={`cooling-${relay.host}`} value={relay.host}>
+                            <option
+                              key={`cooling-${relayOptionKey(relay)}`}
+                              value={relayOptionKey(relay)}
+                            >
                               {(relay.alias || relay.host) +
                                 (relay.model ? ` · ${relay.model}` : "")}
                             </option>
@@ -1765,10 +2247,23 @@ export function DeviceDetailApp({
                               event.target.value,
                             );
                             if (event.target.value.trim()) {
-                              updateRoutingField("cooling_selected_host", "");
+                              updateRoutingField("cooling_selected_relay", "");
                             }
                           }}
                         />
+                      </label>
+                      <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
+                        Manual driver
+                        <select
+                          className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+                          value={routingDraft.cooling_manual_driver}
+                          onChange={(event) =>
+                            updateRoutingField("cooling_manual_driver", event.target.value)
+                          }
+                        >
+                          <option value="kasa_local">Kasa local</option>
+                          <option value="shelly_http_rpc">Shelly local</option>
+                        </select>
                       </label>
                       <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
                         Alias override
@@ -1786,13 +2281,13 @@ export function DeviceDetailApp({
 
                     <section className="md:col-span-2">
                       <p className="text-xs font-bold uppercase tracking-[0.18em] text-[var(--accent)]">
-                        Known relays
+                        Known outputs
                       </p>
                       <div className="mt-3 grid gap-3 md:grid-cols-2">
                         {(outputRoutingQuery.data?.discovered_relays ?? []).length > 0 ? (
                           (outputRoutingQuery.data?.discovered_relays ?? []).map((relay) => (
                             <div
-                              key={relay.host}
+                              key={relayOptionKey(relay)}
                               className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm"
                             >
                               <strong className="block text-base font-bold text-[var(--ink)]">
@@ -1801,6 +2296,10 @@ export function DeviceDetailApp({
                               <p className="mt-1 text-[var(--muted)]">
                                 {relay.host}
                                 {relay.model ? ` · ${relay.model}` : ""}
+                              </p>
+                              <p className="mt-1 text-[var(--muted)]">
+                                {relay.driver === "shelly_http_rpc" ? "Shelly local" : "Kasa local"}
+                                {relay.switch_id > 0 ? ` · switch ${relay.switch_id}` : ""}
                               </p>
                               <p className="mt-1 text-[var(--muted)]">
                                 {relay.is_on === true
@@ -1814,7 +2313,7 @@ export function DeviceDetailApp({
                           ))
                         ) : (
                           <div className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm text-[var(--muted)]">
-                            No Kasa devices discovered yet. Run a scan from this
+                            No discovered Kasa or Shelly outputs yet. Run a scan from this
                             modal.
                           </div>
                         )}
@@ -1841,6 +2340,7 @@ export function DeviceDetailApp({
                       setIsRoutingOpen(false);
                       setIsRoutingDirty(false);
                       setRoutingError(null);
+                      resetRelayScanFeedback();
                     }}
                     disabled={isRoutingPending}
                   >

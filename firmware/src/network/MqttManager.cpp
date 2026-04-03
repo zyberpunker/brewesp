@@ -7,11 +7,13 @@
 
 #include "config/FirmwareVersion.h"
 #include "output/OutputManager.h"
+#include "support/Logger.h"
 #include "ui/LocalUiManager.h"
 
 namespace {
 constexpr uint32_t kTelemetryIntervalMs = 15000UL;
 constexpr uint16_t kMqttBufferSize = 2048U;
+constexpr uint16_t kMqttKeepAliveSeconds = 60U;
 
 const char* outputStateName(OutputState state) {
     switch (state) {
@@ -56,10 +58,19 @@ bool MqttManager::begin(const SystemConfig& config) {
     currentConfig_ = config;
     client_.setServer(config.mqtt.host.c_str(), config.mqtt.port);
     client_.setBufferSize(kMqttBufferSize);
+    client_.setKeepAlive(kMqttKeepAliveSeconds);
     client_.setCallback(
         [this](char* topic, uint8_t* payload, unsigned int length) {
             handleMessage(currentConfig_, topic, payload, length);
         });
+    LOG_INFO(
+        "[mqtt] begin host=%s port=%u client_id=%s topic_prefix=%s device_id=%s keepalive_s=%u\r\n",
+        config.mqtt.host.c_str(),
+        config.mqtt.port,
+        config.mqtt.clientId.c_str(),
+        config.mqtt.topicPrefix.c_str(),
+        config.deviceId.c_str(),
+        static_cast<unsigned>(kMqttKeepAliveSeconds));
     return true;
 }
 
@@ -74,14 +85,27 @@ void MqttManager::update(
 
     if (connectIfNeeded(config, outputs, localUi, telemetry)) {
         client_.loop();
-        flushPendingFermentationWork();
+        flushPendingWork();
+        const bool connected = client_.connected();
+        if (!connectionStateKnown_ || lastKnownConnectionState_ != connected) {
+            connectionStateKnown_ = true;
+            lastKnownConnectionState_ = connected;
+            LOG_INFO("[mqtt] connection state=%s rc=%d\r\n", connected ? "connected" : "disconnected", client_.state());
+        }
         return;
     }
 
     client_.loop();
-    flushPendingFermentationWork();
+    flushPendingWork();
 
-    if (!client_.connected()) {
+    const bool connected = client_.connected();
+    if (!connectionStateKnown_ || lastKnownConnectionState_ != connected) {
+        connectionStateKnown_ = true;
+        lastKnownConnectionState_ = connected;
+        LOG_INFO("[mqtt] connection state=%s rc=%d\r\n", connected ? "connected" : "disconnected", client_.state());
+    }
+
+    if (!connected) {
         return;
     }
 
@@ -101,7 +125,7 @@ bool MqttManager::isConnected() {
     return client_.connected();
 }
 
-void MqttManager::flushPendingFermentationWork() {
+void MqttManager::flushPendingWork() {
     if (pendingConfigApplied_.active) {
         publishConfigApplied(
             currentConfig_,
@@ -112,9 +136,49 @@ void MqttManager::flushPendingFermentationWork() {
         pendingConfigApplied_ = PendingConfigApplied{};
     }
 
+    if (hasPendingSystemConfig_ && systemConfigHandler_) {
+        hasPendingSystemConfig_ = false;
+        LOG_DEBUG_MSG("[mqtt] applying queued system_config");
+        systemConfigHandler_(pendingSystemConfig_);
+    }
+
     if (hasPendingFermentationConfig_ && fermentationConfigHandler_) {
         hasPendingFermentationConfig_ = false;
+        LOG_DEBUG_MSG("[mqtt] applying queued fermentation config");
         fermentationConfigHandler_(pendingFermentationConfig_);
+    }
+
+    if (pendingOutputCommand_.active && outputCommandHandler_) {
+        const String target = pendingOutputCommand_.target;
+        const OutputState state = pendingOutputCommand_.state;
+        pendingOutputCommand_ = PendingOutputCommand{};
+        LOG_DEBUG(
+            "[mqtt] dispatching queued output command target=%s state=%s\r\n",
+            target.c_str(),
+            outputStateName(state));
+        outputCommandHandler_(target, state);
+    }
+
+    if (pendingProfileCommand_.active && profileCommandHandler_) {
+        const String command = pendingProfileCommand_.command;
+        const String stepId = pendingProfileCommand_.stepId;
+        pendingProfileCommand_ = PendingProfileCommand{};
+        LOG_DEBUG("[mqtt] dispatching queued profile command=%s step_id=%s\r\n", command.c_str(), stepId.c_str());
+        profileCommandHandler_(command, stepId);
+    }
+
+    if (pendingDiscoveryRequest_ && discoveryRequestHandler_) {
+        pendingDiscoveryRequest_ = false;
+        LOG_DEBUG_MSG("[mqtt] dispatching queued discovery request");
+        discoveryRequestHandler_();
+    }
+
+    if (pendingOtaCommand_.active && otaCommandHandler_) {
+        const String command = pendingOtaCommand_.command;
+        const String channel = pendingOtaCommand_.channel;
+        pendingOtaCommand_ = PendingOtaCommand{};
+        LOG_DEBUG("[mqtt] dispatching queued ota command=%s channel=%s\r\n", command.c_str(), channel.c_str());
+        otaCommandHandler_(command, channel);
     }
 }
 
@@ -174,14 +238,20 @@ bool MqttManager::connectIfNeeded(
         willPayload.c_str());
 
     if (!connected) {
-        Serial.printf("[mqtt] connect failed rc=%d\r\n", client_.state());
+        LOG_WARN("[mqtt] connect failed rc=%d\r\n", client_.state());
         return false;
     }
 
-    Serial.printf("[mqtt] connected host=%s port=%u\r\n", config.mqtt.host.c_str(), config.mqtt.port);
-    client_.subscribe(topicFor(config, "system_config").c_str());
-    client_.subscribe(topicFor(config, "command").c_str());
-    client_.subscribe(topicFor(config, "config/desired").c_str());
+    LOG_INFO("[mqtt] connected host=%s port=%u\r\n", config.mqtt.host.c_str(), config.mqtt.port);
+    const String systemConfigTopic = topicFor(config, "system_config");
+    const String commandTopic = topicFor(config, "command");
+    const String configDesiredTopic = topicFor(config, "config/desired");
+    client_.subscribe(systemConfigTopic.c_str());
+    client_.subscribe(commandTopic.c_str());
+    client_.subscribe(configDesiredTopic.c_str());
+    LOG_DEBUG("[mqtt] subscribed topic=%s\r\n", systemConfigTopic.c_str());
+    LOG_DEBUG("[mqtt] subscribed topic=%s\r\n", commandTopic.c_str());
+    LOG_DEBUG("[mqtt] subscribed topic=%s\r\n", configDesiredTopic.c_str());
     publishAvailability(config, "online");
     publishHeartbeat(config, outputs, localUi);
     publishTelemetry(config, outputs, telemetry);
@@ -217,7 +287,7 @@ void MqttManager::publishHeartbeat(
         outputStateName(outputs.coolingState()));
 
     client_.publish(topicFor(config, "heartbeat").c_str(), payload, false);
-    Serial.printf("[mqtt] heartbeat published topic=%s\r\n", topicFor(config, "heartbeat").c_str());
+    LOG_DEBUG("[mqtt] heartbeat published topic=%s\r\n", topicFor(config, "heartbeat").c_str());
 }
 
 void MqttManager::publishState(
@@ -291,7 +361,7 @@ void MqttManager::publishState(
     String payload;
     const size_t payloadLength = serializeJson(doc, payload);
     if (payloadLength == 0 || payloadLength >= kMqttBufferSize) {
-        Serial.println("[mqtt] state payload too large");
+        LOG_WARN_MSG("[mqtt] state payload too large");
         return;
     }
 
@@ -359,20 +429,20 @@ void MqttManager::publishTelemetry(
     String payload;
     const size_t payloadLength = serializeJson(doc, payload);
     if (payloadLength == 0 || payloadLength >= kMqttBufferSize) {
-        Serial.println("[mqtt] telemetry payload too large");
+        LOG_WARN_MSG("[mqtt] telemetry payload too large");
         return;
     }
 
     client_.publish(topicFor(config, "telemetry").c_str(), payload.c_str(), false);
 }
 
-void MqttManager::publishKasaDiscovery(const SystemConfig& config, const String& devicePayload) {
+void MqttManager::publishOutputDiscovery(const SystemConfig& config, const String& devicePayload) {
     if (!client_.connected()) {
         return;
     }
 
     const String payload = "{\"device_id\":\"" + config.deviceId + "\",\"result\":" + devicePayload + "}";
-    client_.publish(topicFor(config, "discovery/kasa").c_str(), payload.c_str(), false);
+    client_.publish(topicFor(config, "discovery/output").c_str(), payload.c_str(), false);
 }
 
 void MqttManager::publishEvent(
@@ -443,6 +513,15 @@ void MqttManager::handleMessage(
     }
 
     const String topicName(topic);
+    if (topicName.endsWith("/command")) {
+        LOG_DEBUG(
+            "[mqtt] message topic=%s bytes=%u body=%s\r\n",
+            topicName.c_str(),
+            length,
+            body.c_str());
+    } else {
+        LOG_DEBUG("[mqtt] message topic=%s bytes=%u\r\n", topicName.c_str(), length);
+    }
     if (topicName.endsWith("/system_config")) {
         handleSystemConfig(config, body);
         return;
@@ -466,17 +545,21 @@ void MqttManager::handleSystemConfig(const SystemConfig& currentConfig, const St
     StaticJsonDocument<768> doc;
     const DeserializationError error = deserializeJson(doc, payload);
     if (error) {
-        Serial.printf("[mqtt] invalid system_config json error=%s\r\n", error.c_str());
+        LOG_WARN("[mqtt] invalid system_config json error=%s\r\n", error.c_str());
         return;
     }
 
     SystemConfig updated = currentConfig;
+    if (doc.containsKey("debug_enabled")) {
+        updated.debugEnabled = doc["debug_enabled"] | updated.debugEnabled;
+    }
     JsonObject heating = doc["heating"];
     if (!heating.isNull()) {
         updated.heatingOutput.driver =
             outputDriverFromString(String(static_cast<const char*>(heating["driver"] | "none")));
         updated.heatingOutput.host = String(static_cast<const char*>(heating["host"] | ""));
         updated.heatingOutput.port = heating["port"] | updated.heatingOutput.port;
+        updated.heatingOutput.switchId = heating["switch_id"] | updated.heatingOutput.switchId;
         updated.heatingOutput.alias = String(static_cast<const char*>(heating["alias"] | ""));
     }
 
@@ -486,6 +569,7 @@ void MqttManager::handleSystemConfig(const SystemConfig& currentConfig, const St
             outputDriverFromString(String(static_cast<const char*>(cooling["driver"] | "none")));
         updated.coolingOutput.host = String(static_cast<const char*>(cooling["host"] | ""));
         updated.coolingOutput.port = cooling["port"] | updated.coolingOutput.port;
+        updated.coolingOutput.switchId = cooling["switch_id"] | updated.coolingOutput.switchId;
         updated.coolingOutput.alias = String(static_cast<const char*>(cooling["alias"] | ""));
     }
 
@@ -510,7 +594,9 @@ void MqttManager::handleSystemConfig(const SystemConfig& currentConfig, const St
     }
 
     currentConfig_ = updated;
-    systemConfigHandler_(updated);
+    pendingSystemConfig_ = updated;
+    hasPendingSystemConfig_ = true;
+    LOG_DEBUG_MSG("[mqtt] queued system_config update");
 }
 
 void MqttManager::handleFermentationConfig(const String& payload) {
@@ -518,12 +604,12 @@ void MqttManager::handleFermentationConfig(const String& payload) {
         return;
     }
 
-    Serial.printf("[mqtt] fermentation config received bytes=%u\r\n", payload.length());
+    LOG_DEBUG("[mqtt] fermentation config received bytes=%u\r\n", payload.length());
 
     DynamicJsonDocument doc(4096);
     const DeserializationError error = deserializeJson(doc, payload);
     if (error) {
-        Serial.printf("[mqtt] invalid fermentation config json error=%s\r\n", error.c_str());
+        LOG_WARN("[mqtt] invalid fermentation config json error=%s\r\n", error.c_str());
         return;
     }
 
@@ -536,7 +622,7 @@ void MqttManager::handleFermentationConfig(const String& payload) {
 
     JsonObject profile = doc["profile"];
     if (schemaVersion != 2 || version == 0 || deviceId.isEmpty() || thermostat.isNull() || sensors.isNull()) {
-        Serial.println("[mqtt] fermentation config missing required fields");
+        LOG_WARN_MSG("[mqtt] fermentation config missing required fields");
         pendingConfigApplied_.active = true;
         pendingConfigApplied_.requestedVersion = version;
         pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
@@ -564,7 +650,7 @@ void MqttManager::handleFermentationConfig(const String& payload) {
         || (controlSensor != "primary" && controlSensor != "secondary")
         || (controlSensor == "secondary" && !secondaryEnabled)
         || (mode != "thermostat" && mode != "profile")) {
-        Serial.println("[mqtt] fermentation config validation failed");
+        LOG_WARN_MSG("[mqtt] fermentation config validation failed");
         pendingConfigApplied_.active = true;
         pendingConfigApplied_.requestedVersion = version;
         pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
@@ -642,7 +728,7 @@ void MqttManager::handleFermentationConfig(const String& payload) {
         }
     }
 
-    Serial.printf(
+    LOG_DEBUG(
         "[mqtt] fermentation config validated version=%lu mode=%s\r\n",
         static_cast<unsigned long>(version),
         updated.mode.c_str());
@@ -651,17 +737,27 @@ void MqttManager::handleFermentationConfig(const String& payload) {
 }
 
 void MqttManager::handleCommand(const String& payload) {
+    LOG_DEBUG("[mqtt] command payload=%s\r\n", payload.c_str());
+
     StaticJsonDocument<384> doc;
     const DeserializationError error = deserializeJson(doc, payload);
     if (error) {
-        Serial.printf("[mqtt] invalid command json error=%s\r\n", error.c_str());
+        LOG_WARN("[mqtt] invalid command json error=%s\r\n", error.c_str());
         return;
     }
 
     const String command = String(static_cast<const char*>(doc["command"] | ""));
-    if (command == "discover_kasa") {
+    LOG_DEBUG("[mqtt] command parsed command=%s\r\n", command.c_str());
+    if (command == "discover_kasa" || command == "discover_outputs") {
+        LOG_DEBUG(
+            "[mqtt] discovery command received command=%s handler=%s\r\n",
+            command.c_str(),
+            discoveryRequestHandler_ ? "set" : "missing");
         if (discoveryRequestHandler_) {
-            discoveryRequestHandler_();
+            pendingDiscoveryRequest_ = true;
+            LOG_DEBUG_MSG("[mqtt] queued discovery request");
+        } else {
+            LOG_WARN_MSG("[mqtt] discovery command ignored because handler is missing");
         }
         return;
     }
@@ -669,7 +765,11 @@ void MqttManager::handleCommand(const String& payload) {
     if (command == "set_output" && outputCommandHandler_) {
         const String target = String(static_cast<const char*>(doc["target"] | ""));
         const String state = String(static_cast<const char*>(doc["state"] | ""));
-        outputCommandHandler_(target, outputStateFromString(state));
+        LOG_DEBUG("[mqtt] output command target=%s state=%s\r\n", target.c_str(), state.c_str());
+        pendingOutputCommand_.active = true;
+        pendingOutputCommand_.target = target;
+        pendingOutputCommand_.state = outputStateFromString(state);
+        LOG_DEBUG_MSG("[mqtt] queued output command");
         return;
     }
 
@@ -681,7 +781,11 @@ void MqttManager::handleCommand(const String& payload) {
         if (!args.isNull()) {
             stepId = String(static_cast<const char*>(args["step_id"] | ""));
         }
-        profileCommandHandler_(command, stepId);
+        LOG_DEBUG("[mqtt] profile command=%s step_id=%s\r\n", command.c_str(), stepId.c_str());
+        pendingProfileCommand_.active = true;
+        pendingProfileCommand_.command = command;
+        pendingProfileCommand_.stepId = stepId;
+        LOG_DEBUG_MSG("[mqtt] queued profile command");
         return;
     }
 
@@ -690,8 +794,15 @@ void MqttManager::handleCommand(const String& payload) {
         const String channel = args.isNull()
             ? String(static_cast<const char*>(doc["channel"] | ""))
             : String(static_cast<const char*>(args["channel"] | ""));
-        otaCommandHandler_(command, channel);
+        LOG_DEBUG("[mqtt] ota command=%s channel=%s\r\n", command.c_str(), channel.c_str());
+        pendingOtaCommand_.active = true;
+        pendingOtaCommand_.command = command;
+        pendingOtaCommand_.channel = channel;
+        LOG_DEBUG_MSG("[mqtt] queued ota command");
+        return;
     }
+
+    LOG_WARN("[mqtt] unhandled command=%s\r\n", command.c_str());
 }
 
 String MqttManager::topicFor(const SystemConfig& config, const char* suffix) const {

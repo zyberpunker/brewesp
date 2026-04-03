@@ -84,8 +84,8 @@ export async function fetchOutputRouting(
 export async function updateOutputRouting(
   deviceId: string,
   payload: {
-    heating: { host: string; alias?: string };
-    cooling: { host: string; alias?: string };
+    heating: { host: string; driver: string; port?: number; switch_id?: number; alias?: string };
+    cooling: { host: string; driver: string; port?: number; switch_id?: number; alias?: string };
   },
 ): Promise<OutputRoutingPayload> {
   const response = await fetch(`/api/devices/${deviceId}/output-routing`, {
@@ -100,7 +100,7 @@ export async function updateOutputRouting(
   return readJson<OutputRoutingPayload>(response);
 }
 
-export async function scanKasaRelays(
+export async function scanOutputRelays(
   deviceId: string,
 ): Promise<Record<string, string>> {
   const response = await fetch(`/api/devices/${deviceId}/output-routing/discover`, {

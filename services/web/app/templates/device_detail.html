@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', path='react/device-detail.css') }}?v=20260401-no-legacy">
+    <link rel="stylesheet" href="{{ url_for('static', path='react/device-detail.css') }}?v=20260403-scan-log">
     <script>
       window.process = window.process || {};
       window.process.env = window.process.env || {};
@@ -16,7 +16,7 @@
     <script>
       window.__BREWESP_DEVICE_DETAIL__ = {{ bootstrap | tojson }};
     </script>
-    <script type="module" src="{{ url_for('static', path='react/device-detail.js') }}?v=20260401-no-legacy"></script>
+    <script type="module" src="{{ url_for('static', path='react/device-detail.js') }}?v=20260403-scan-log"></script>
   </head>
   <body>
     <div id="device-detail-root"></div>

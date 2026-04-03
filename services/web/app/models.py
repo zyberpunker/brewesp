@@ -119,6 +119,7 @@ class DeviceOutputAssignment(Base):
     driver: Mapped[str] = mapped_column(String(32), default="none")
     host: Mapped[str | None] = mapped_column(String(128), nullable=True)
     port: Mapped[int] = mapped_column(Integer, default=9999)
+    switch_id: Mapped[int] = mapped_column(Integer, default=0)
     alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -133,6 +134,7 @@ class DiscoveredRelay(Base):
     driver: Mapped[str] = mapped_column(String(32), default="kasa_local")
     host: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     port: Mapped[int] = mapped_column(Integer, default=9999)
+    switch_id: Mapped[int] = mapped_column(Integer, default=0)
     alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

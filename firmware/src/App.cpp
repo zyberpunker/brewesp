@@ -2,11 +2,15 @@
 
 #include <WiFi.h>
 
+#include "support/Logger.h"
+
 namespace {
 const uint32_t kHeartbeatLogIntervalMs = 5000;
 constexpr float kDefaultSetpointC = 20.0f;
 constexpr uint32_t kProfileRuntimePersistIntervalMs = 300000UL;
 constexpr uint32_t kSensorStaleAfterMs = 30000UL;
+constexpr uint32_t kManualOutputOverrideDurationMs = 120000UL;
+constexpr uint32_t kControlLoopIntervalMs = 1000UL;
 
 bool isSensorStale(const SensorManager::Reading& reading, uint32_t nowMs) {
     return reading.updatedAtMs != 0 && static_cast<uint32_t>(nowMs - reading.updatedAtMs) > kSensorStaleAfterMs;
@@ -31,10 +35,12 @@ void App::begin() {
     initializeProfileRuntime();
     persistProfileRuntime(millis(), true);
     mqtt_.setAppliedFermentationVersion(fermentationConfig_.version);
+    Logger::setDebugEnabled(config_.debugEnabled);
 
     Serial.println();
     Serial.println("brewesp firmware booting");
     Serial.printf("device_id=%s\r\n", config_.deviceId.c_str());
+    LOG_INFO("[log] debug=%s\r\n", config_.debugEnabled ? "enabled" : "disabled");
 
     mqtt_.setSystemConfigHandler([this](const SystemConfig& updatedConfig) { handleSystemConfig(updatedConfig); });
     mqtt_.setFermentationConfigHandler(
@@ -43,7 +49,10 @@ void App::begin() {
         [this](const String& target, OutputState state) { handleOutputCommand(target, state); });
     mqtt_.setProfileCommandHandler(
         [this](const String& command, const String& stepId) { handleProfileCommand(command, stepId); });
-    mqtt_.setDiscoveryRequestHandler([this]() { runKasaDiscovery(); });
+    mqtt_.setDiscoveryRequestHandler([this]() {
+        LOG_DEBUG_MSG("[app] discovery request handler invoked");
+        runOutputDiscovery();
+    });
     mqtt_.setOtaCommandHandler(
         [this](const String& command, const String& channel) { handleOtaCommand(command, channel); });
 
@@ -72,9 +81,9 @@ void App::update() {
 
     ensureWifiConnected();
     const uint32_t nowMs = millis();
-    updateControlLoop(nowMs);
     mqtt_.update(config_, outputs_, localUi_, buildTelemetrySnapshot());
     processPendingOtaCommand();
+    updateControlLoop(nowMs);
     if (ota_.shouldRunScheduledCheck(config_, nowMs)) {
         OtaManager::CheckResult check = ota_.checkForUpdate(config_);
         if (mqtt_.isConnected()) {
@@ -88,7 +97,7 @@ void App::update() {
         }
     }
     if (otaRestartAtMs_ != 0 && nowMs >= otaRestartAtMs_) {
-        Serial.println("[ota] rebooting into staged firmware");
+        LOG_INFO_MSG("[ota] rebooting into staged firmware");
         delay(250);
         otaRestartAtMs_ = 0;
         otaShutdownPending_ = false;
@@ -121,7 +130,46 @@ void App::updateControlLoop(uint32_t nowMs) {
     localUi_.update();
     outputs_.update();
     sensors_.update(config_);
+
+    if (lastControlLoopMs_ != 0 && (nowMs - lastControlLoopMs_) < kControlLoopIntervalMs) {
+        return;
+    }
+    lastControlLoopMs_ = nowMs;
+
     const ControllerEngine::Inputs controllerInputs = buildControllerInputs();
+
+    if (manualOutputOverrideActive_) {
+        if (isOtaLockoutActive()) {
+            const bool changed = outputs_.setHeating(OutputState::Off) || outputs_.setCooling(OutputState::Off);
+            outputs_.refreshStates();
+            clearManualOutputOverride("ota lockout");
+            if (changed) {
+                mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+            }
+            return;
+        }
+
+        if (!controllerInputs.hasPrimaryTemp) {
+            const bool changed = outputs_.setHeating(OutputState::Off) || outputs_.setCooling(OutputState::Off);
+            outputs_.refreshStates();
+            clearManualOutputOverride(
+                controllerInputs.faultReason.isEmpty() ? "sensor fault" : controllerInputs.faultReason.c_str());
+            if (changed) {
+                mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+            }
+            return;
+        }
+
+        if (
+            manualOutputOverrideUntilMs_ != 0
+            && static_cast<int32_t>(nowMs - manualOutputOverrideUntilMs_) >= 0) {
+            clearManualOutputOverride("timeout");
+        } else {
+            outputs_.refreshStates();
+            return;
+        }
+    }
+
     const bool profileCanAdvance = !isOtaLockoutActive() && controllerInputs.hasPrimaryTemp;
     const bool profileChanged = updateProfileRuntime(nowMs, profileCanAdvance);
     if (isOtaLockoutActive()) {
@@ -134,6 +182,11 @@ void App::updateControlLoop(uint32_t nowMs) {
 }
 
 void App::handleSystemConfig(const SystemConfig& updatedConfig) {
+    if (manualOutputOverrideActive_) {
+        clearManualOutputOverride("system_config update");
+    }
+    config_.debugEnabled = updatedConfig.debugEnabled;
+    Logger::setDebugEnabled(config_.debugEnabled);
     config_.sensors = updatedConfig.sensors;
     config_.heatingOutput = updatedConfig.heatingOutput;
     config_.coolingOutput = updatedConfig.coolingOutput;
@@ -144,10 +197,13 @@ void App::handleSystemConfig(const SystemConfig& updatedConfig) {
     outputs_.applyConfig(config_);
     ota_.begin(config_);
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
-    Serial.println("[app] applied system_config from MQTT");
+    LOG_INFO_MSG("[app] applied system_config from MQTT");
 }
 
 void App::handleFermentationConfig(const FermentationConfig& updatedConfig) {
+    if (manualOutputOverrideActive_) {
+        clearManualOutputOverride("fermentation config update");
+    }
     fermentationConfigRollback_ = fermentationConfig_;
     profileRuntimeRollback_ = profileRuntime_;
 
@@ -187,7 +243,7 @@ void App::handleFermentationConfig(const FermentationConfig& updatedConfig) {
         fermentationConfig_.version,
         "ok",
         nullptr);
-    Serial.printf(
+    LOG_INFO(
         "[app] applied fermentation config version=%lu mode=%s setpoint=%.2f hysteresis=%.2f\r\n",
         static_cast<unsigned long>(fermentationConfig_.version),
         fermentationConfig_.mode.c_str(),
@@ -204,7 +260,7 @@ void App::handleOutputCommand(const String& target, OutputState state) {
     const bool sensorFaultActive = !currentInputs.hasPrimaryTemp;
 
     if (state == OutputState::On && sensorFaultActive) {
-        Serial.printf(
+        LOG_WARN(
             "[app] ignoring output-on command during sensor fault target=%s reason=%s\r\n",
             target.c_str(),
             currentInputs.faultReason.isEmpty() ? "sensor fault active" : currentInputs.faultReason.c_str());
@@ -212,18 +268,20 @@ void App::handleOutputCommand(const String& target, OutputState state) {
     }
 
     if (isOtaLockoutActive()) {
-        Serial.printf(
+        LOG_WARN(
             "[app] ignoring output command during OTA reboot pending target=%s state=%s\r\n",
             target.c_str(),
             state == OutputState::On ? "on" : "off");
         return;
     }
 
-    Serial.printf(
+    LOG_DEBUG(
         "[app] output command target=%s state=%s\r\n",
         target.c_str(),
         state == OutputState::On ? "on" : "off");
 
+    const bool overrideWasActive = manualOutputOverrideActive_;
+    const uint32_t previousOverrideUntilMs = manualOutputOverrideUntilMs_;
     bool changed = false;
     if (target == "heating") {
         changed = outputs_.setHeating(state);
@@ -231,20 +289,29 @@ void App::handleOutputCommand(const String& target, OutputState state) {
         changed = outputs_.setCooling(state);
     } else if (target == "all") {
         changed = outputs_.setHeating(state) || outputs_.setCooling(state);
+    } else {
+        LOG_WARN("[app] ignoring output command with unsupported target=%s\r\n", target.c_str());
+        return;
     }
 
+    manualOutputOverrideActive_ = true;
+    manualOutputOverrideUntilMs_ = millis() + kManualOutputOverrideDurationMs;
     outputs_.refreshStates();
-    Serial.printf(
-        "[app] output command result changed=%s heating=%s cooling=%s\r\n",
+    LOG_DEBUG(
+        "[app] output command result changed=%s heating=%s cooling=%s manual_override_until_ms=%lu\r\n",
         changed ? "true" : "false",
         outputs_.describeHeating().c_str(),
-        outputs_.describeCooling().c_str());
-    if (changed) {
+        outputs_.describeCooling().c_str(),
+        static_cast<unsigned long>(manualOutputOverrideUntilMs_));
+    if (!overrideWasActive || previousOverrideUntilMs != manualOutputOverrideUntilMs_ || changed) {
         mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     }
 }
 
 void App::handleProfileCommand(const String& command, const String& stepId) {
+    if (manualOutputOverrideActive_) {
+        clearManualOutputOverride("profile command");
+    }
     if (fermentationConfig_.mode != "profile" || fermentationConfig_.profile.stepCount == 0) {
         return;
     }
@@ -315,8 +382,19 @@ void App::handleProfileCommand(const String& command, const String& stepId) {
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
 }
 
+void App::clearManualOutputOverride(const char* reason) {
+    if (!manualOutputOverrideActive_ && manualOutputOverrideUntilMs_ == 0) {
+        return;
+    }
+
+    manualOutputOverrideActive_ = false;
+    manualOutputOverrideUntilMs_ = 0;
+    controller_.reset();
+    LOG_INFO("[app] manual output override cleared reason=%s\r\n", reason ? reason : "unspecified");
+}
+
 void App::handleOtaCommand(const String& command, const String& channel) {
-    Serial.printf("[app] ota command=%s channel=%s\r\n", command.c_str(), channel.c_str());
+    LOG_DEBUG("[app] ota command=%s channel=%s\r\n", command.c_str(), channel.c_str());
     pendingOtaCommand_ = command;
     pendingOtaChannel_ = channel;
 }
@@ -393,9 +471,13 @@ MqttManager::TelemetrySnapshot App::buildTelemetrySnapshot() const {
     telemetry.heatingDelaySeconds = fermentationConfig_.thermostat.heatingDelaySeconds;
     telemetry.mode = fermentationConfig_.mode;
     telemetry.activeConfigVersion = fermentationConfig_.version;
-    telemetry.controllerState = ControllerEngine::stateName(controllerStatus.state);
-    telemetry.controllerReason = controllerStatus.reason;
-    telemetry.automaticControlActive = controllerStatus.automaticControlActive;
+    telemetry.controllerState = manualOutputOverrideActive_
+        ? "manual_override"
+        : ControllerEngine::stateName(controllerStatus.state);
+    telemetry.controllerReason = manualOutputOverrideActive_
+        ? "manual output override active"
+        : controllerStatus.reason;
+    telemetry.automaticControlActive = manualOutputOverrideActive_ ? false : controllerStatus.automaticControlActive;
     telemetry.secondarySensorEnabled = fermentationConfig_.sensors.secondaryEnabled;
     telemetry.controlSensor = fermentationConfig_.sensors.controlSensor;
     if (beerProbe.valid && !beerProbeStale) {
@@ -764,12 +846,30 @@ void App::resumeProfileTimers(uint32_t nowMs) {
     }
 }
 
-void App::runKasaDiscovery() {
-    Serial.println("[app] running Kasa discovery");
-    const bool found = kasaDiscovery_.discover(
-        [this](const String& payload) { mqtt_.publishKasaDiscovery(config_, payload); });
+void App::runOutputDiscovery() {
+    LOG_DEBUG(
+        "[app] running output discovery wifi=%s mqtt=%s local_ip=%s mask=%s\r\n",
+        WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
+        mqtt_.isConnected() ? "connected" : "disconnected",
+        WiFi.localIP().toString().c_str(),
+        WiFi.subnetMask().toString().c_str());
+
+    bool found = false;
+    LOG_DEBUG_MSG("[app] starting Kasa discovery");
+    found = kasaDiscovery_.discover(
+                [this](const String& payload) { mqtt_.publishOutputDiscovery(config_, payload); })
+        || found;
+    LOG_DEBUG_MSG("[app] Kasa discovery finished");
+    LOG_DEBUG_MSG("[app] starting Shelly discovery");
+    found = shellyDiscovery_.discover(
+                [this](const String& payload) { mqtt_.publishOutputDiscovery(config_, payload); })
+        || found;
+    LOG_DEBUG_MSG("[app] Shelly discovery finished");
+
     if (!found) {
-        Serial.println("[app] Kasa discovery returned no devices");
+        LOG_DEBUG_MSG("[app] output discovery returned no devices");
+    } else {
+        LOG_DEBUG_MSG("[app] output discovery published at least one device");
     }
 }
 
@@ -839,13 +939,13 @@ SystemConfig App::buildDefaultConfig() const {
     config.display.enabled = false;
     config.buttons.enabled = false;
 
-    config.heatingOutput.driver = OutputDriverType::KasaLocal;
+    config.heatingOutput.driver = OutputDriverType::None;
     config.heatingOutput.host = "";
     config.heatingOutput.port = 9999;
     config.heatingOutput.alias = "heating-plug";
     config.heatingOutput.pollIntervalSeconds = 30;
 
-    config.coolingOutput.driver = OutputDriverType::KasaLocal;
+    config.coolingOutput.driver = OutputDriverType::None;
     config.coolingOutput.host = "";
     config.coolingOutput.port = 9999;
     config.coolingOutput.alias = "cooling-plug";

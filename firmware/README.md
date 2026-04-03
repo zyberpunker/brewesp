@@ -22,6 +22,12 @@ Current scaffold now includes:
 - PlatformIO Arduino project setup
 - `OutputDriver` abstraction
 - `gpio` output driver
-- `shelly_http_rpc` output driver stub
-- `kasa_local` output driver stub
+- `shelly_http_rpc` local-network driver
+- `kasa_local` local-network driver
 - optional `local_ui` manager for headless or panel-based operation
+
+Fresh firmware defaults start with both heating and cooling outputs set to `none`
+until a real output is provisioned or synced into local config.
+
+Verbose serial logging is gated behind `debug_enabled`; normal operation keeps
+only higher-signal boot, Wi-Fi, MQTT, and fault logs enabled.

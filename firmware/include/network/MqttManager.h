@@ -92,7 +92,7 @@ public:
         uint32_t appliedVersion,
         const char* result,
         const char* message);
-    void publishKasaDiscovery(const SystemConfig& config, const String& devicePayload);
+    void publishOutputDiscovery(const SystemConfig& config, const String& devicePayload);
     void publishEvent(
         const SystemConfig& config,
         const char* eventName,
@@ -109,12 +109,30 @@ private:
         String message;
     };
 
+    struct PendingOutputCommand {
+        bool active = false;
+        String target;
+        OutputState state = OutputState::Unknown;
+    };
+
+    struct PendingProfileCommand {
+        bool active = false;
+        String command;
+        String stepId;
+    };
+
+    struct PendingOtaCommand {
+        bool active = false;
+        String command;
+        String channel;
+    };
+
     bool connectIfNeeded(
         const SystemConfig& config,
         const OutputManager& outputs,
         const LocalUiManager& localUi,
         const TelemetrySnapshot& telemetry);
-    void flushPendingFermentationWork();
+    void flushPendingWork();
     void handleMessage(const SystemConfig& config, char* topic, uint8_t* payload, unsigned int length);
     void handleSystemConfig(const SystemConfig& currentConfig, const String& payload);
     void handleFermentationConfig(const String& payload);
@@ -143,7 +161,15 @@ private:
     DiscoveryRequestHandler discoveryRequestHandler_;
     OtaCommandHandler otaCommandHandler_;
     uint32_t lastAppliedFermentationVersion_ = 0;
+    bool hasPendingSystemConfig_ = false;
     bool hasPendingFermentationConfig_ = false;
+    bool pendingDiscoveryRequest_ = false;
+    bool connectionStateKnown_ = false;
+    bool lastKnownConnectionState_ = false;
+    SystemConfig pendingSystemConfig_;
     FermentationConfig pendingFermentationConfig_;
     PendingConfigApplied pendingConfigApplied_;
+    PendingOutputCommand pendingOutputCommand_;
+    PendingProfileCommand pendingProfileCommand_;
+    PendingOtaCommand pendingOtaCommand_;
 };

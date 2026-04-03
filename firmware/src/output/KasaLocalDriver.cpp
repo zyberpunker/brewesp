@@ -5,6 +5,8 @@
 
 #include <memory>
 
+#include "support/Logger.h"
+
 namespace {
 const uint8_t kLegacyInitialKey = 171;
 const uint32_t kSocketTimeoutMs = 1500;
@@ -21,7 +23,7 @@ const char* KasaLocalDriver::driverName() const {
 }
 
 bool KasaLocalDriver::begin() {
-    Serial.printf(
+    LOG_DEBUG(
         "[kasa] init host=%s port=%u alias=%s poll_interval_s=%lu\r\n",
         host_.c_str(),
         port_,
@@ -40,26 +42,27 @@ bool KasaLocalDriver::setState(OutputState state) {
         return false;
     }
 
-    Serial.printf(
-        "[kasa] setState request host=%s desired=%s current=%s\r\n",
-        host_.c_str(),
-        state == OutputState::On ? "on" : "off",
-        state_ == OutputState::On ? "on" : state_ == OutputState::Off ? "off" : "unknown");
+    const bool noisyTransition = state_ == OutputState::Unknown || state_ != state;
+    if (noisyTransition) {
+        LOG_DEBUG(
+            "[kasa] setState request host=%s desired=%s current=%s\r\n",
+            host_.c_str(),
+            state == OutputState::On ? "on" : "off",
+            state_ == OutputState::On ? "on" : state_ == OutputState::Off ? "off" : "unknown");
+    }
 
     const char* relayStateValue = state == OutputState::On ? "1" : "0";
     const String payload =
         "{\"system\":{\"set_relay_state\":{\"state\":" + String(relayStateValue) + "}}}";
     String response;
     if (!sendRequest(payload, response)) {
-        Serial.printf("[kasa] setState failed host=%s\r\n", host_.c_str());
+        LOG_DEBUG("[kasa] setState failed host=%s\r\n", host_.c_str());
         return false;
     }
 
-    Serial.printf("[kasa] setState raw response host=%s response=%s\r\n", host_.c_str(), response.c_str());
-
     const int errCode = parseErrCode(response);
     if (errCode != 0) {
-        Serial.printf(
+        LOG_WARN(
             "[kasa] setState err_code=%d host=%s response=%s\r\n",
             errCode,
             host_.c_str(),
@@ -70,13 +73,13 @@ bool KasaLocalDriver::setState(OutputState state) {
 
     delay(150);
     if (!queryState("verify")) {
-        Serial.printf("[kasa] setState verify failed host=%s\r\n", host_.c_str());
+        LOG_DEBUG("[kasa] setState verify failed host=%s\r\n", host_.c_str());
         state_ = OutputState::Unknown;
         return false;
     }
 
     if (state_ != state) {
-        Serial.printf(
+        LOG_WARN(
             "[kasa] setState mismatch host=%s expected=%s actual=%s\r\n",
             host_.c_str(),
             state == OutputState::On ? "on" : "off",
@@ -84,11 +87,14 @@ bool KasaLocalDriver::setState(OutputState state) {
         return false;
     }
 
-    Serial.printf(
-        "[kasa] host=%s alias=%s state=%s\r\n",
-        host_.c_str(),
-        alias_.c_str(),
-        state == OutputState::On ? "on" : "off");
+    if (noisyTransition || lastLoggedState_ != state) {
+        LOG_INFO(
+            "[kasa] state host=%s alias=%s state=%s\r\n",
+            host_.c_str(),
+            alias_.c_str(),
+            state == OutputState::On ? "on" : "off");
+        lastLoggedState_ = state;
+    }
     return true;
 }
 
@@ -121,13 +127,13 @@ void KasaLocalDriver::update() {
 bool KasaLocalDriver::queryState(const char* context) {
     String response;
     if (!sendRequest("{\"system\":{\"get_sysinfo\":{}}}", response)) {
-        Serial.printf("[kasa] queryState failed host=%s\r\n", host_.c_str());
+        LOG_DEBUG("[kasa] queryState failed host=%s\r\n", host_.c_str());
         return false;
     }
 
     const int errCode = parseErrCode(response);
     if (errCode != 0) {
-        Serial.printf(
+        LOG_WARN(
             "[kasa] queryState err_code=%d host=%s response=%s\r\n",
             errCode,
             host_.c_str(),
@@ -137,21 +143,27 @@ bool KasaLocalDriver::queryState(const char* context) {
 
     const OutputState parsed = parseRelayState(response);
     if (parsed == OutputState::Unknown) {
-        Serial.printf(
+        LOG_WARN(
             "[kasa] could not parse relay state host=%s response=%s\r\n",
             host_.c_str(),
             response.c_str());
         return false;
     }
 
+    const OutputState previousState = state_;
     state_ = parsed;
-    if (context != nullptr) {
-        Serial.printf(
-            "[kasa] queryState context=%s host=%s parsed=%s response=%s\r\n",
-            context,
+    if (previousState != state_) {
+        LOG_INFO(
+            "[kasa] state change host=%s from=%s to=%s%s%s\r\n",
             host_.c_str(),
+            previousState == OutputState::On
+                ? "on"
+                : previousState == OutputState::Off ? "off"
+                                                    : "unknown",
             state_ == OutputState::On ? "on" : "off",
-            response.c_str());
+            context != nullptr ? " context=" : "",
+            context != nullptr ? context : "");
+        lastLoggedState_ = state_;
     }
     lastPollMs_ = millis();
     return true;
@@ -162,7 +174,7 @@ bool KasaLocalDriver::sendRequest(const String& payload, String& response) {
     client.setTimeout(kSocketTimeoutMs);
 
     if (!client.connect(host_.c_str(), port_)) {
-        Serial.printf("[kasa] connect failed host=%s port=%u\r\n", host_.c_str(), port_);
+        LOG_DEBUG("[kasa] connect failed host=%s port=%u\r\n", host_.c_str(), port_);
         return false;
     }
 

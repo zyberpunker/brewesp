@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "tsc --noEmit && vite build"
+    "postbuild": "node ./scripts/sync-static.mjs",
+    "check": "tsc --noEmit && npm run build"
   },
   "dependencies": {
     "@tanstack/react-query": "latest",

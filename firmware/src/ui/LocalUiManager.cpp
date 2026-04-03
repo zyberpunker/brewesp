@@ -1,18 +1,20 @@
 #include "ui/LocalUiManager.h"
 
+#include "support/Logger.h"
+
 bool LocalUiManager::begin(const SystemConfig& config) {
     enabled_ = config.localUi.enabled;
     headless_ = !enabled_;
 
     if (enabled_) {
-        Serial.println("[ui] local UI enabled");
-        Serial.printf(
+        LOG_INFO_MSG("[ui] local UI enabled");
+        LOG_DEBUG(
             "[ui] display=%s address=%s buttons=%s\r\n",
             config.display.driver.c_str(),
             config.display.i2cAddress.c_str(),
             config.buttons.enabled ? "enabled" : "disabled");
     } else {
-        Serial.println("[ui] headless mode");
+        LOG_INFO_MSG("[ui] headless mode");
     }
 
     return true;

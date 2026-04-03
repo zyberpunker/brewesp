@@ -123,6 +123,7 @@ void ProvisioningManager::handleSave() {
     SystemConfig updated = currentConfig_;
 
     updated.deviceId = server_.arg("device_id");
+    updated.debugEnabled = server_.hasArg("debug_enabled");
     updated.wifi.ssid = server_.arg("wifi_ssid");
     updated.wifi.password = server_.arg("wifi_password");
 
@@ -201,6 +202,11 @@ String ProvisioningManager::buildHtmlPage() const {
     page += "<form method='post' action='/save'>";
 
     page += "<label>Device ID<input name='device_id' value='" + htmlEscape(currentConfig_.deviceId) + "'></label>";
+    page += "<label><input type='checkbox' name='debug_enabled' ";
+    if (currentConfig_.debugEnabled) {
+        page += "checked";
+    }
+    page += "> Enable debug logging</label>";
     page += "<label>Wi-Fi SSID<input name='wifi_ssid' value='" + htmlEscape(currentConfig_.wifi.ssid) + "'></label>";
     page += "<label>Wi-Fi password<input name='wifi_password' type='password' value='" + htmlEscape(currentConfig_.wifi.password) + "'></label>";
 
@@ -215,7 +221,7 @@ String ProvisioningManager::buildHtmlPage() const {
 
     page += "<fieldset><legend>Heating output</legend>";
     page += "<label>Driver<select name='heating_driver'>";
-    for (const char* option : {"kasa_local", "gpio", "shelly_http_rpc"}) {
+    for (const char* option : {"none", "kasa_local", "gpio", "shelly_http_rpc"}) {
         page += "<option value='" + String(option) + "'";
         if (driverName(currentConfig_.heatingOutput.driver) == option) {
             page += " selected";
@@ -231,7 +237,7 @@ String ProvisioningManager::buildHtmlPage() const {
 
     page += "<fieldset><legend>Cooling output</legend>";
     page += "<label>Driver<select name='cooling_driver'>";
-    for (const char* option : {"kasa_local", "gpio", "shelly_http_rpc"}) {
+    for (const char* option : {"none", "kasa_local", "gpio", "shelly_http_rpc"}) {
         page += "<option value='" + String(option) + "'";
         if (driverName(currentConfig_.coolingOutput.driver) == option) {
             page += " selected";

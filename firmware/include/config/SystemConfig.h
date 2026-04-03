@@ -94,6 +94,7 @@ struct OtaConfig {
 
 struct SystemConfig {
     String deviceId = "brewesp-dev";
+    bool debugEnabled = false;
     WifiConfig wifi;
     MqttConfig mqtt;
     HeartbeatConfig heartbeat;

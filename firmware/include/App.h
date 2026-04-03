@@ -9,6 +9,7 @@
 #include "ota/OtaManager.h"
 #include "output/KasaDiscovery.h"
 #include "output/OutputManager.h"
+#include "output/ShellyDiscovery.h"
 #include "sensor/SensorManager.h"
 #include "ui/LocalUiManager.h"
 
@@ -39,10 +40,11 @@ private:
     void resetProfileRuntime();
     void initializeProfileRuntime();
     bool activateProfileStep(uint8_t stepIndex, bool treatAsFreshStep);
+    void clearManualOutputOverride(const char* reason);
     void handleOtaCommand(const String& command, const String& channel);
     void processPendingOtaCommand();
     bool isOtaLockoutActive() const;
-    void runKasaDiscovery();
+    void runOutputDiscovery();
     SystemConfig buildDefaultConfig() const;
     ControllerEngine::Inputs buildControllerInputs() const;
 
@@ -55,17 +57,21 @@ private:
     MqttManager mqtt_;
     OtaManager ota_;
     KasaDiscovery kasaDiscovery_;
+    ShellyDiscovery shellyDiscovery_;
     OutputManager outputs_;
     SensorManager sensors_;
     LocalUiManager localUi_;
     ProfileRuntimeState profileRuntime_;
     ProfileRuntimeState profileRuntimeRollback_;
     uint32_t lastProfileRuntimePersistMs_ = 0;
+    uint32_t lastControlLoopMs_ = 0;
     uint32_t lastHeartbeatLogMs_ = 0;
     uint32_t wifiConnectStartedMs_ = 0;
     uint32_t otaRestartAtMs_ = 0;
+    uint32_t manualOutputOverrideUntilMs_ = 0;
     bool provisioningMode_ = false;
     bool otaShutdownPending_ = false;
+    bool manualOutputOverrideActive_ = false;
     String pendingOtaCommand_;
     String pendingOtaChannel_;
 };

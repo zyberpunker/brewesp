@@ -50,6 +50,7 @@ bool ConfigStore::load(SystemConfig& config) {
     }
 
     config.deviceId = prefs.getString("device_id", config.deviceId);
+    config.debugEnabled = prefs.getBool("dbg_en", config.debugEnabled);
     config.wifi.ssid = prefs.getString("wifi_ssid", "");
     config.wifi.password = prefs.getString("wifi_pass", "");
     config.wifi.recoveryAp.ssid = prefs.getString("ap_ssid", "");
@@ -95,6 +96,7 @@ bool ConfigStore::load(SystemConfig& config) {
     config.heatingOutput.pin = prefs.getChar("heat_pin", config.heatingOutput.pin);
     config.heatingOutput.host = prefs.getString("heat_host", config.heatingOutput.host);
     config.heatingOutput.port = prefs.getUInt("heat_port", config.heatingOutput.port);
+    config.heatingOutput.switchId = prefs.getUChar("heat_sw", config.heatingOutput.switchId);
     config.heatingOutput.alias = prefs.getString("heat_alias", config.heatingOutput.alias);
 
     config.coolingOutput.driver = outputDriverFromString(
@@ -102,6 +104,7 @@ bool ConfigStore::load(SystemConfig& config) {
     config.coolingOutput.pin = prefs.getChar("cool_pin", config.coolingOutput.pin);
     config.coolingOutput.host = prefs.getString("cool_host", config.coolingOutput.host);
     config.coolingOutput.port = prefs.getUInt("cool_port", config.coolingOutput.port);
+    config.coolingOutput.switchId = prefs.getUChar("cool_sw", config.coolingOutput.switchId);
     config.coolingOutput.alias = prefs.getString("cool_alias", config.coolingOutput.alias);
     config.ota.enabled = prefs.getBool("ota_en", config.ota.enabled);
     config.ota.channel = prefs.getString("ota_chan", config.ota.channel);
@@ -124,6 +127,7 @@ bool ConfigStore::save(const SystemConfig& config) {
     }
 
     prefs.putString("device_id", config.deviceId);
+    prefs.putBool("dbg_en", config.debugEnabled);
     prefs.putString("wifi_ssid", config.wifi.ssid);
     prefs.putString("wifi_pass", config.wifi.password);
     prefs.putString("ap_ssid", config.wifi.recoveryAp.ssid);
@@ -163,12 +167,14 @@ bool ConfigStore::save(const SystemConfig& config) {
     prefs.putChar("heat_pin", config.heatingOutput.pin);
     prefs.putString("heat_host", config.heatingOutput.host);
     prefs.putUInt("heat_port", config.heatingOutput.port);
+    prefs.putUChar("heat_sw", config.heatingOutput.switchId);
     prefs.putString("heat_alias", config.heatingOutput.alias);
 
     prefs.putString("cool_drv", outputDriverToString(config.coolingOutput.driver));
     prefs.putChar("cool_pin", config.coolingOutput.pin);
     prefs.putString("cool_host", config.coolingOutput.host);
     prefs.putUInt("cool_port", config.coolingOutput.port);
+    prefs.putUChar("cool_sw", config.coolingOutput.switchId);
     prefs.putString("cool_alias", config.coolingOutput.alias);
     prefs.putBool("ota_en", config.ota.enabled);
     prefs.putString("ota_chan", config.ota.channel);

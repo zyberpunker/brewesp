@@ -24,5 +24,6 @@ private:
     String alias_;
     uint32_t pollIntervalSeconds_;
     OutputState state_ = OutputState::Unknown;
+    OutputState lastLoggedState_ = OutputState::Unknown;
     uint32_t lastPollMs_ = 0;
 };

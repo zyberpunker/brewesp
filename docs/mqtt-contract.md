@@ -343,6 +343,8 @@ Imperative actions that should not live inside retained config.
 
 Supported commands:
 
+- `set_output`
+- `discover_outputs`
 - `profile_pause`
 - `profile_resume`
 - `profile_release_hold`
@@ -356,7 +358,35 @@ For OTA commands, the requested channel may be provided either as
 `args.channel` or as a top-level `channel`. Firmware prefers `args.channel`
 when both are present.
 
+`set_output` is an operator override for direct heating/cooling testing. It
+temporarily suspends automatic control on the ESP32 for about 2 minutes so the
+requested output state can remain visible instead of being immediately
+overridden by thermostat or profile control. Sensor-fault shutdown and OTA
+lockout still force both outputs off.
+
+`discover_outputs` is intended for operator-initiated LAN scans of supported
+output backends such as Kasa and Shelly. Discovery results are published on the
+non-retained topic `<topic_prefix>/<device_id>/discovery/output`.
+
 Examples:
+
+```json
+{
+  "command": "set_output",
+  "requested_by": "web",
+  "ts": "2026-04-03T13:10:00Z",
+  "target": "heating",
+  "state": "on"
+}
+```
+
+```json
+{
+  "command": "discover_outputs",
+  "requested_by": "web",
+  "ts": "2026-04-03T12:40:00Z"
+}
+```
 
 ```json
 {

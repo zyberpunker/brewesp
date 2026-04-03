@@ -79,7 +79,15 @@ class MqttBridge:
             return
 
         prefix = settings.mqtt_topic_prefix
-        for suffix in ("availability", "heartbeat", "state", "telemetry", "discovery/kasa", "config/applied"):
+        for suffix in (
+            "availability",
+            "heartbeat",
+            "state",
+            "telemetry",
+            "discovery/output",
+            "discovery/kasa",
+            "config/applied",
+        ):
             topic = f"{prefix}/+/{suffix}"
             client.subscribe(topic)
         logger.info("MQTT bridge subscribed on prefix=%s", prefix)
@@ -109,8 +117,8 @@ class MqttBridge:
             self._handle_telemetry(payload)
         elif topic_type == "applied" and len(parts) >= 4 and parts[-2] == "config":
             self._handle_config_applied(payload)
-        elif topic_type == "kasa" and len(parts) >= 4 and parts[-2] == "discovery":
-            self._handle_kasa_discovery(payload)
+        elif topic_type in {"kasa", "output"} and len(parts) >= 4 and parts[-2] == "discovery":
+            self._handle_output_discovery(payload)
 
     def _get_or_create_device(self, session, device_id: str) -> Device:
         device = session.scalar(select(Device).where(Device.device_id == device_id))
@@ -220,7 +228,7 @@ class MqttBridge:
             )
             session.add(sample)
 
-    def _handle_kasa_discovery(self, payload: dict) -> None:
+    def _handle_output_discovery(self, payload: dict) -> None:
         device_id = payload.get("device_id")
         result = payload.get("result")
         if not device_id or not isinstance(result, dict):
@@ -240,6 +248,7 @@ class MqttBridge:
             relay.source_device_id = source_device.id
             relay.driver = result.get("driver", relay.driver or "kasa_local")
             relay.port = int(result.get("port", relay.port or 9999))
+            relay.switch_id = int(result.get("switch_id", relay.switch_id or 0))
             relay.alias = result.get("alias")
             relay.model = result.get("model")
             relay.is_on = result.get("is_on")

@@ -219,6 +219,7 @@ def _build_system_config_payload(device: Device) -> dict:
                 "driver": "none",
                 "host": "",
                 "port": 9999,
+                "switch_id": 0,
                 "alias": "",
             }
 
@@ -226,6 +227,7 @@ def _build_system_config_payload(device: Device) -> dict:
             "driver": assignment.driver,
             "host": assignment.host,
             "port": assignment.port,
+            "switch_id": assignment.switch_id,
             "alias": assignment.alias or "",
         }
 
@@ -242,6 +244,7 @@ def _serialize_discovered_relay(relay: DiscoveredRelay) -> dict:
         "alias": relay.alias,
         "driver": relay.driver,
         "port": relay.port,
+        "switch_id": relay.switch_id,
         "model": relay.model,
         "is_on": relay.is_on,
         "last_seen_at": relay.last_seen_at.isoformat() if relay.last_seen_at else None,
@@ -496,12 +499,14 @@ def _upsert_assignment(session, device: Device, role: str, relay: DiscoveredRela
         existing.driver = "none"
         existing.host = None
         existing.port = 9999
+        existing.switch_id = 0
         existing.alias = None
         return
 
     existing.driver = relay.driver
     existing.host = relay.host
     existing.port = relay.port
+    existing.switch_id = relay.switch_id
     existing.alias = relay.alias
 
 
@@ -510,6 +515,9 @@ def _resolve_routing_relay(
     device: Device,
     *,
     host: str,
+    driver: str = "kasa_local",
+    port: int | None = None,
+    switch_id: int = 0,
     alias: str = "",
 ) -> DiscoveredRelay | None:
     normalized_host = host.strip()
@@ -523,13 +531,18 @@ def _resolve_routing_relay(
             source_device_id=device.id,
             host=normalized_host,
             alias=normalized_alias,
-            driver="kasa_local",
-            port=9999,
+            driver=driver or "kasa_local",
+            port=port if port is not None else (80 if driver == "shelly_http_rpc" else 9999),
+            switch_id=switch_id,
         )
         session.add(relay)
         return relay
 
     relay.source_device_id = relay.source_device_id or device.id
+    relay.driver = driver or relay.driver
+    if port is not None:
+        relay.port = port
+    relay.switch_id = switch_id
     if normalized_alias:
         relay.alias = normalized_alias
     return relay
@@ -715,12 +728,18 @@ async def update_output_routing(request: Request, device_id: str):
             session,
             device,
             host=str(heating.get("host", "")),
+            driver=str(heating.get("driver", "kasa_local")),
+            port=int(heating["port"]) if heating.get("port") is not None else None,
+            switch_id=int(heating.get("switch_id", 0)),
             alias=str(heating.get("alias", "")),
         )
         cooling_relay = _resolve_routing_relay(
             session,
             device,
             host=str(cooling.get("host", "")),
+            driver=str(cooling.get("driver", "kasa_local")),
+            port=int(cooling["port"]) if cooling.get("port") is not None else None,
+            switch_id=int(cooling.get("switch_id", 0)),
             alias=str(cooling.get("alias", "")),
         )
 
@@ -732,18 +751,19 @@ async def update_output_routing(request: Request, device_id: str):
             select(DiscoveredRelay)
             .order_by(desc(DiscoveredRelay.last_seen_at), DiscoveredRelay.alias)
         ).all()
+        publish_device_id = device.device_id
         publish_payload = _build_system_config_payload(device)
         response_payload = _build_output_routing_payload(device, discovered_relays)
         session.commit()
 
-    mqtt_bridge.publish_system_config(device.device_id, publish_payload)
+    mqtt_bridge.publish_system_config(publish_device_id, publish_payload)
     return JSONResponse(response_payload)
 
 
 @app.post("/api/devices/{device_id}/output-routing/discover")
 def discover_output_relays(device_id: str):
-    mqtt_bridge.publish_command(device_id, {"command": "discover_kasa"})
-    return JSONResponse({"status": "queued", "command": "discover_kasa"})
+    mqtt_bridge.publish_command(device_id, {"command": "discover_outputs"})
+    return JSONResponse({"status": "queued", "command": "discover_outputs"})
 
 
 @app.get("/api/devices/{device_id}/telemetry")
