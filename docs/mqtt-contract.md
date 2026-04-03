@@ -8,6 +8,7 @@ The main goal is:
 - desired fermentation configuration from backend to ESP32
 - explicit acknowledgement of what the device actually applied
 - runtime truth for profile progress owned by the ESP32
+- MQTT-first alerts that are simple to consume from Home Assistant
 
 Important scope note:
 
@@ -24,6 +25,11 @@ Assume `device_id = fermenter-01`.
 - `brewesp/fermenter-01/heartbeat`
 - `brewesp/fermenter-01/state`
 - `brewesp/fermenter-01/telemetry`
+- `brewesp/fermenter-01/alerts/summary`
+- `brewesp/fermenter-01/alerts/<code>/state`
+- `brewesp/fermenter-01/alerts/<code>/severity`
+- `brewesp/fermenter-01/alerts/<code>/message`
+- `brewesp/fermenter-01/alerts/<code>/acknowledged`
 - `brewesp/fermenter-01/history/raw`
 - `brewesp/fermenter-01/config/desired`
 - `brewesp/fermenter-01/config/applied`
@@ -31,6 +37,7 @@ Assume `device_id = fermenter-01`.
 - `brewesp/fermenter-01/command`
 - `brewesp/fermenter-01/discovery/kasa`
 - `brewesp/fermenter-01/event`
+- `brewesp/fermenter-01/event/alert`
 
 ## Topic intent
 
@@ -214,6 +221,131 @@ Expected `profile_runtime.phase` values:
 - `completed`
 - `faulted`
 
+### `alerts/*`
+
+This is the MQTT-first alert contract for `firmware_v2`.
+
+Design goals:
+
+- Home Assistant should be able to build automations from plain MQTT topics
+  without parsing large JSON documents
+- every alert should have one stable machine-friendly code
+- retained alert topics should always describe the current truth
+- transient alert changes should also be emitted as events for notification
+  automations
+
+Important compatibility note:
+
+- `state.fault` remains for simple controller-fault display and backward
+  compatibility
+- the `alerts/*` topics are the preferred surface for automation and alert
+  routing
+- `state.fault` only represents an active `fault` severity condition, not the
+  full alert set
+
+Topic set per alert code:
+
+- `alerts/<code>/state`
+- `alerts/<code>/severity`
+- `alerts/<code>/message`
+- `alerts/<code>/acknowledged`
+
+Payload rules:
+
+- `alerts/<code>/state` is the plain string `ON` or `OFF`
+- `alerts/<code>/severity` is the plain string `fault`, `alarm`, or `warning`
+- `alerts/<code>/message` is a short human-readable string such as
+  `Beer sensor stale`
+- `alerts/<code>/acknowledged` is the plain string `ON` or `OFF`
+- all `alerts/<code>/*` topics are retained
+
+Recommended initial alert codes:
+
+- `control_sensor_missing`
+- `control_sensor_invalid`
+- `control_sensor_stale`
+- `secondary_sensor_missing`
+- `secondary_sensor_invalid`
+- `secondary_sensor_stale`
+- `sensor_deviation_high`
+- `sensor_jump_unrealistic`
+- `sensor_mapping_changed`
+- `mqtt_disconnected_long`
+- `output_command_failed`
+
+Severity policy:
+
+- `fault` means the condition is safety-relevant and the ESP32 must keep
+  outputs off locally
+- `alarm` means the device can continue running but operator attention is
+  expected
+- `warning` means degraded or suspicious behavior that should still be surfaced
+
+Example retained topics:
+
+- `brewesp/fermenter-01/alerts/control_sensor_stale/state` => `ON`
+- `brewesp/fermenter-01/alerts/control_sensor_stale/severity` => `fault`
+- `brewesp/fermenter-01/alerts/control_sensor_stale/message` => `Beer sensor stale`
+- `brewesp/fermenter-01/alerts/control_sensor_stale/acknowledged` => `OFF`
+
+### `alerts/summary`
+
+Small retained summary for dashboards and "any active alert" automations.
+
+Payload example:
+
+```json
+{
+  "active": true,
+  "fault_active": true,
+  "highest_severity": "fault",
+  "active_count": 2
+}
+```
+
+Recommended semantics:
+
+- `active` is `true` if any alert is currently active
+- `fault_active` is `true` if any active alert has severity `fault`
+- `highest_severity` is one of `fault`, `alarm`, `warning`, or `none`
+- `active_count` is the number of active alert codes currently `ON`
+
+### `event/alert`
+
+Non-retained alert transition events for notification automations.
+
+This topic should be emitted only when an alert changes state or acknowledgement
+status. Do not publish periodic refreshes here.
+
+Payload example:
+
+```json
+{
+  "device_id": "fermenter-01",
+  "ts": 1743343560,
+  "code": "control_sensor_stale",
+  "action": "raised",
+  "severity": "fault",
+  "message": "Beer sensor stale"
+}
+```
+
+Allowed `action` values:
+
+- `raised`
+- `cleared`
+- `acknowledged`
+
+Rules:
+
+- `event/alert` must not be retained
+- `raised` and `cleared` are emitted only on transitions
+- `acknowledged` is emitted only when operator acknowledgement changes from
+  `OFF` to `ON`
+- `message` should stay short and stable enough for templated Home Assistant
+  notifications
+- `code` values must stay stable across firmware releases
+
 ### `history/raw`
 
 Optional raw event stream for archival or analytics.
@@ -295,6 +427,10 @@ Payload example:
 - when `fault` is non-null, the firmware forces both outputs off locally
 - a non-primary probe may still report `stale` or `invalid` without forcing a
   controller fault by itself
+- `control_sensor_missing`, `control_sensor_invalid`, and
+  `control_sensor_stale` should therefore publish with severity `fault`
+- non-primary probe alerts should normally publish as `alarm` or `warning`,
+  not `fault`
 
 ### `config/desired`
 
@@ -379,10 +515,10 @@ Wire-unit rule:
 Current implementation note:
 
 - the web service publishes and validates the `alarms` block
-- current firmware control logic applies thermostat, sensor, and profile fields
-  but does not yet use `alarms.deviation_c` or `alarms.sensor_stale_s` to drive
-  runtime decisions
-- stale-sensor shutdown is currently hard-coded to `30` seconds in firmware
+- `firmware_v2` should use `alarms.deviation_c` and `alarms.sensor_stale_s`
+  to drive local alert generation and MQTT alert topics
+- until the `firmware_v2` rollout is complete, some firmware builds may still
+  ignore parts of the `alarms` block
 
 ### `config/applied`
 
@@ -420,6 +556,7 @@ Supported commands:
 
 - `set_output`
 - `discover_kasa`
+- `ack_alert`
 - `profile_pause`
 - `profile_resume`
 - `profile_release_hold`
@@ -438,8 +575,21 @@ Current implementation notes:
 - `set_output` is used by the web UI for manual heating/cooling commands
 - `discover_kasa` asks the device to scan the local subnet and publish results
   on `discovery/kasa`
+- `ack_alert` acknowledges an active alert for operator workflow only; it must
+  not clear the underlying condition or bypass any local safety shutdown
 
 Examples:
+
+```json
+{
+  "command": "ack_alert",
+  "requested_by": "web",
+  "ts": "2026-03-29T14:04:00Z",
+  "args": {
+    "code": "control_sensor_stale"
+  }
+}
+```
 
 ```json
 {
@@ -592,3 +742,8 @@ These rules are important from the start:
 9. MQTT config topics are for `fermentation_config`, not mandatory bootstrap.
 10. `profile_runtime` is device-owned runtime truth.
 11. OTA binaries should be transferred over HTTP/HTTPS, not MQTT payloads.
+12. `alerts/<code>/*` topics should be retained.
+13. `event/alert` should not be retained.
+14. `alerts/<code>/state` and `alerts/<code>/acknowledged` should use plain
+    `ON`/`OFF` payloads.
+15. Alert codes should be stable, lowercase, and underscore-separated.
