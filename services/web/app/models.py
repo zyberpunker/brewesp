@@ -117,7 +117,7 @@ class FermentationProfile(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
-    source: Mapped[str] = mapped_column(String(24), default="manual")
+    source: Mapped[str] = mapped_column(String(24), default="user")
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     profile_data: Mapped[dict] = mapped_column(JSON)
     imported_from: Mapped[str | None] = mapped_column(String(256), nullable=True)

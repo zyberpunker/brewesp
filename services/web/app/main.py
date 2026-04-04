@@ -98,6 +98,13 @@ def _slugify(value: str, fallback: str = "profile") -> str:
     return slug or fallback
 
 
+def _normalize_profile_source(source: str | None) -> str:
+    normalized = (source or "").strip().lower()
+    if normalized == "manual":
+        return "user"
+    return normalized or "user"
+
+
 def _profile_step_duration(days: float) -> int:
     return int(round(days * 86400))
 
@@ -530,7 +537,7 @@ def _serialize_profile_summary(profile: FermentationProfile) -> dict:
     return {
         "slug": profile.slug,
         "name": profile.name,
-        "source": profile.source,
+        "source": _normalize_profile_source(profile.source),
         "is_builtin": profile.is_builtin,
         "imported_from": profile.imported_from,
         "step_count": len(steps),
@@ -981,7 +988,7 @@ async def create_fermentation_profile(request: Request):
         profile = FermentationProfile(
             slug=_ensure_unique_profile_slug(session, name),
             name=name,
-            source="manual",
+            source="user",
             is_builtin=False,
             profile_data=profile_data,
         )

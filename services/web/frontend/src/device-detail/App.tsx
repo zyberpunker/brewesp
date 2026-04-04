@@ -37,7 +37,7 @@ import {
 } from "@/device-detail/api";
 import { TemperatureChart } from "@/device-detail/TemperatureChart";
 import { fetchProfileDetail, fetchProfiles } from "@/profiles/api";
-import type { ProfileDetail, ProfileSummary } from "@/profiles/types";
+import type { ProfileDetail } from "@/profiles/types";
 import type {
   DeviceDetailBootstrap,
   OutputRoutingPayload,
@@ -116,6 +116,7 @@ type DeviceSettingsDraft = {
 type FermentationSetupDraft = {
   name: string;
   mode: "thermostat" | "profile";
+  profile_slug: string;
 };
 
 type OutputRoutingDraft = {
@@ -165,7 +166,31 @@ function buildFermentationSetupDraft(
   return {
     name: plan.name,
     mode: plan.mode,
+    profile_slug: "",
   };
+}
+
+function profileSourceTone(source: string) {
+  if (source === "builtin") {
+    return "online";
+  }
+  if (source === "beerxml") {
+    return "cooling";
+  }
+  return "neutral";
+}
+
+function profileSourceLabel(source: string) {
+  if (source === "manual" || source === "user") {
+    return "User";
+  }
+  if (source === "beerxml") {
+    return "BeerXML";
+  }
+  if (source === "builtin") {
+    return "Built-in";
+  }
+  return source;
 }
 
 function slugifyProfileId(name: string) {
@@ -389,12 +414,23 @@ export function DeviceDetailApp({
   const profileLibraryQuery = useQuery({
     queryKey: ["fermentation-profiles"],
     queryFn: fetchProfiles,
-    enabled: isProfileChooserOpen,
+    enabled: isFermentationSetupOpen || isProfileChooserOpen,
   });
+  const selectedLibraryProfileSummary =
+    fermentationSetupDraft?.mode === "profile"
+      ? (profileLibraryQuery.data ?? []).find(
+          (profile) => profile.slug === fermentationSetupDraft.profile_slug,
+        ) ?? null
+      : null;
+  const activeLibraryProfileSlug = isProfileChooserOpen
+    ? selectedLibraryProfileSlug ?? ""
+    : selectedLibraryProfileSummary?.slug ?? "";
   const selectedLibraryProfileQuery = useQuery({
-    queryKey: ["fermentation-profile", selectedLibraryProfileSlug],
-    queryFn: () => fetchProfileDetail(selectedLibraryProfileSlug ?? ""),
-    enabled: isProfileChooserOpen && Boolean(selectedLibraryProfileSlug),
+    queryKey: ["fermentation-profile", activeLibraryProfileSlug],
+    queryFn: () => fetchProfileDetail(activeLibraryProfileSlug),
+    enabled:
+      (isFermentationSetupOpen && Boolean(selectedLibraryProfileSummary))
+      || (isProfileChooserOpen && Boolean(activeLibraryProfileSlug)),
   });
 
   const live = liveQuery.data;
@@ -443,20 +479,29 @@ export function DeviceDetailApp({
   }, [isRoutingDirty, isRoutingOpen, outputRoutingQuery.data]);
 
   useEffect(() => {
-    if (
-      !isProfileChooserOpen ||
-      !libraryProfiles.length
-    ) {
+    if (!isFermentationSetupOpen || !fermentationSetupDraft) {
       return;
     }
-    if (!selectedLibraryProfileSlug) {
-      setSelectedLibraryProfileSlug(libraryProfiles[0].slug);
+    if (fermentationSetupDraft.mode !== "profile" || !libraryProfiles.length) {
       return;
     }
-    if (!libraryProfiles.some((profile) => profile.slug === selectedLibraryProfileSlug)) {
-      setSelectedLibraryProfileSlug(libraryProfiles[0].slug);
+
+    if (!fermentationSetupDraft.profile_slug && !fermentationPlan?.profile) {
+      setFermentationSetupDraft((current) =>
+        current && current.mode === "profile" && !current.profile_slug
+          ? {
+              ...current,
+              profile_slug: libraryProfiles[0].slug,
+            }
+          : current,
+      );
     }
-  }, [isProfileChooserOpen, libraryProfiles, selectedLibraryProfileSlug]);
+  }, [
+    fermentationPlan?.profile,
+    fermentationSetupDraft,
+    isFermentationSetupOpen,
+    libraryProfiles,
+  ]);
 
   const refreshQueries = async () => {
     await Promise.all([
@@ -550,9 +595,15 @@ export function DeviceDetailApp({
       };
 
       if (draft.mode === "profile") {
-        nextPlan.profile =
-          current.profile ??
-          buildDefaultProfilePlan(nextName, current.thermostat.setpoint_c);
+        const nextProfileSlug = draft.profile_slug.trim();
+        if (nextProfileSlug) {
+          const selectedProfile = await fetchProfileDetail(nextProfileSlug);
+          nextPlan.profile = selectedProfile.device_profile;
+        } else {
+          nextPlan.profile =
+            current.profile ??
+            buildDefaultProfilePlan(nextName, current.thermostat.setpoint_c);
+        }
       }
 
       return updateFermentationPlan(deviceId, nextPlan);
@@ -763,14 +814,6 @@ export function DeviceDetailApp({
     });
   };
 
-  const openProfileChooser = () => {
-    startTransition(() => {
-      setSelectedLibraryProfileSlug(fermentationPlan?.profile?.id ?? null);
-      setProfileChooserError(null);
-      setIsProfileChooserOpen(true);
-    });
-  };
-
   const saveFermentationSetup = () => {
     if (!fermentationSetupDraft) {
       return;
@@ -942,13 +985,6 @@ export function DeviceDetailApp({
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="subtle" onClick={() => setIsDiagnosticsOpen(true)}>
               Diagnostics
-            </Button>
-            <Button
-              variant="subtle"
-              onClick={openProfileChooser}
-              disabled={fermentationPlanQuery.isLoading}
-            >
-              Choose profile
             </Button>
             <Button
               variant="subtle"
@@ -1671,7 +1707,7 @@ export function DeviceDetailApp({
                                   : "neutral"
                             }
                           >
-                            {profile.source}
+                            {profileSourceLabel(profile.source)}
                           </Badge>
                         </div>
                         <p className="text-sm text-[var(--muted)]">{profile.slug}</p>
@@ -1716,7 +1752,7 @@ export function DeviceDetailApp({
                             Source
                           </p>
                           <strong className="mt-2 block text-xl font-bold capitalize">
-                            {selectedLibraryProfile.source}
+                            {profileSourceLabel(selectedLibraryProfile.source)}
                           </strong>
                         </div>
                       </div>
@@ -1832,8 +1868,9 @@ export function DeviceDetailApp({
                       Retained plan identity for {deviceId}
                     </h2>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
-                      Change the retained plan name and whether the device runs in
-                      direct thermostat mode or profile mode.
+                      Change the retained plan name, control mode, and the
+                      fermentation profile that should be copied into the device
+                      when profile mode is active.
                     </p>
                   </div>
                   <Button
@@ -1888,9 +1925,168 @@ export function DeviceDetailApp({
                     <option value="profile">Profile</option>
                   </select>
                 </label>
+                {fermentationSetupDraft.mode === "profile" ? (
+                  <div className="grid gap-4 rounded-[24px] border border-black/8 bg-white/72 p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--accent)]">
+                          Profile library
+                        </p>
+                        <h3 className="mt-2 text-xl font-bold tracking-[-0.03em]">
+                          Choose profile
+                        </h3>
+                        <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                          Saving this form copies the selected reusable profile
+                          into the device's retained plan.
+                        </p>
+                      </div>
+                      <a
+                        className="inline-flex min-h-11 items-center justify-center rounded-full bg-white/80 px-4 text-sm font-semibold text-[var(--ink)] ring-1 ring-black/8 transition hover:bg-white"
+                        href="/profiles"
+                      >
+                        Open profile manager
+                      </a>
+                    </div>
+
+                    <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
+                      Fermentation profile
+                      <select
+                        className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+                        value={fermentationSetupDraft.profile_slug}
+                        onChange={(event) =>
+                          setFermentationSetupDraft((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  profile_slug: event.target.value,
+                                }
+                              : current,
+                          )
+                        }
+                        disabled={profileLibraryQuery.isLoading || !libraryProfiles.length}
+                      >
+                        {fermentationPlan?.profile ? (
+                          <option value="">
+                            Keep current copied profile
+                          </option>
+                        ) : null}
+                        {!fermentationPlan?.profile ? (
+                          <option value="">
+                            {libraryProfiles.length
+                              ? "Choose a reusable profile"
+                              : "No reusable profiles available"}
+                          </option>
+                        ) : null}
+                        {libraryProfiles.map((profile) => (
+                          <option key={profile.slug} value={profile.slug}>
+                            {profile.name} ({profile.step_count} steps)
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {profileLibraryQuery.isLoading ? (
+                      <div className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm text-[var(--muted)]">
+                        Loading reusable profiles...
+                      </div>
+                    ) : !libraryProfiles.length ? (
+                      <div className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm leading-6 text-[var(--muted)]">
+                        No reusable profiles are stored yet. You can still keep
+                        the device's current copied plan, or create templates in
+                        the profile manager first.
+                      </div>
+                    ) : !selectedLibraryProfileSummary ? (
+                      <div className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm leading-6 text-[var(--muted)]">
+                        {fermentationPlan?.profile
+                          ? `The device currently keeps the copied profile "${fermentationPlan.profile.id}". Choose a library profile only if you want to replace it.`
+                          : "Choose a reusable profile to preview what will be copied into the device."}
+                      </div>
+                    ) : selectedLibraryProfileQuery.isLoading ? (
+                      <div className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm text-[var(--muted)]">
+                        Loading selected profile...
+                      </div>
+                    ) : selectedLibraryProfile ? (
+                      <>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div className="rounded-[20px] bg-[var(--surface-strong)] p-4">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                              Selected
+                            </p>
+                            <strong className="mt-2 block text-xl font-bold">
+                              {selectedLibraryProfile.name}
+                            </strong>
+                          </div>
+                          <div className="rounded-[20px] bg-[var(--surface-strong)] p-4">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                              Steps
+                            </p>
+                            <strong className="mt-2 block text-xl font-bold">
+                              {selectedLibraryProfile.steps.length}
+                            </strong>
+                          </div>
+                          <div className="rounded-[20px] bg-[var(--surface-strong)] p-4">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                              Source
+                            </p>
+                            <div className="mt-2">
+                              <Badge tone={profileSourceTone(selectedLibraryProfile.source)}>
+                                {profileSourceLabel(selectedLibraryProfile.source)}
+                              </Badge>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3">
+                          {selectedLibraryProfile.steps.map((step, index) => (
+                            <div
+                              key={step.id}
+                              className="rounded-[20px] border border-black/8 bg-[var(--surface-strong)] p-4"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--accent)]">
+                                    Step {index + 1}
+                                  </p>
+                                  <strong className="mt-2 block text-base font-bold">
+                                    {step.label}
+                                  </strong>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <Badge tone="neutral">
+                                    {formatTemperature(step.target_c)}
+                                  </Badge>
+                                  <Badge tone="neutral">
+                                    {formatDurationCompact(step.hold_duration_s)}
+                                  </Badge>
+                                  {step.ramp ? (
+                                    <Badge tone="cooling">
+                                      Ramp {formatDurationCompact(step.ramp.duration_s)}
+                                    </Badge>
+                                  ) : null}
+                                  <Badge
+                                    tone={
+                                      step.advance_policy === "manual_release"
+                                        ? "fault"
+                                        : "online"
+                                    }
+                                  >
+                                    {step.advance_policy === "manual_release"
+                                      ? "Manual release"
+                                      : "Auto"}
+                                  </Badge>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm leading-6 text-[var(--muted)]">
                   Switching to <strong className="text-[var(--ink)]">profile</strong>{" "}
-                  keeps or creates a retained profile plan. Switching to{" "}
+                  keeps the current copied plan or replaces it with the selected
+                  library profile. Switching to{" "}
                   <strong className="text-[var(--ink)]">thermostat</strong> makes the
                   direct target the active retained control mode.
                 </div>
