@@ -35,14 +35,10 @@ The system is split into three parts:
 1. `firmware/`
    ESP32 firmware that reads sensors, runs the control loop, applies profiles,
    and publishes telemetry/state over MQTT.
-   The legacy implementation remains here.
-2. `firmware_v2/`
-   Fresh rewrite for `0.2.0-dev`, built from the repository documentation in a
-   separate tree so the new work can proceed without touching the legacy code.
-3. `services/web/`
+2. `services/web/`
    Dockerized web service that provides settings UI, device overview, profile
    editor, and history pages. It also publishes config JSON to MQTT.
-4. `docs/`
+3. `docs/`
    Design notes, requirements, MQTT contract, and roadmap.
 
 ## Current planning documents
