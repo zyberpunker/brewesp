@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
+import re
+from xml.etree import ElementTree as ET
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -20,6 +22,7 @@ from .models import (
     DeviceOutputAssignment,
     DeviceTelemetry,
     DiscoveredRelay,
+    FermentationProfile,
 )
 from .mqtt_bridge import MqttBridge
 
@@ -30,6 +33,7 @@ mqtt_bridge = MqttBridge()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    _seed_builtin_profiles()
     mqtt_bridge.start()
     yield
     mqtt_bridge.stop()
@@ -41,6 +45,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 STALE_AFTER_SECONDS = 90
 OFFLINE_AFTER_SECONDS = 180
 MAX_PROFILE_STEPS = 10
+MAX_LIBRARY_PROFILE_STEPS = 7
 MAX_PROFILE_TARGET_C = 50.0
 MIN_PROFILE_TARGET_C = -20.0
 MAX_PROFILE_DURATION_S = 3596400
@@ -86,6 +91,97 @@ def _serialize_telemetry(samples: list[DeviceTelemetry]) -> list[dict]:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _slugify(value: str, fallback: str = "profile") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or fallback
+
+
+def _profile_step_duration(days: float) -> int:
+    return int(round(days * 86400))
+
+
+def _build_profile_step(
+    step_id: str,
+    label: str,
+    target_c: float,
+    hold_duration_s: int,
+    *,
+    advance_policy: str = "auto",
+    ramp_mode: str | None = None,
+    ramp_duration_s: int | None = None,
+) -> dict:
+    step = {
+        "id": step_id,
+        "label": label,
+        "target_c": target_c,
+        "hold_duration_s": hold_duration_s,
+        "advance_policy": advance_policy,
+    }
+    if ramp_mode == "time" and ramp_duration_s and ramp_duration_s > 0:
+        step["ramp"] = {
+            "mode": "time",
+            "duration_s": ramp_duration_s,
+        }
+    return step
+
+
+def _build_builtin_profile_payload(slug: str) -> dict:
+    if slug == "ale":
+        return {
+            "schema_version": 1,
+            "steps": [
+                _build_profile_step("step-1", "Step 1", 19.0, _profile_step_duration(7)),
+                _build_profile_step("step-2", "Step 2", 21.0, _profile_step_duration(3)),
+            ],
+        }
+    if slug == "lager":
+        return {
+            "schema_version": 1,
+            "steps": [
+                _build_profile_step("step-1", "Step 1", 11.0, _profile_step_duration(10)),
+                _build_profile_step("step-2", "Step 2", 15.0, _profile_step_duration(3)),
+            ],
+        }
+    raise ValueError(f"Unsupported builtin profile slug: {slug}")
+
+
+def _seed_builtin_profiles() -> None:
+    builtin_profiles = (
+        ("ale", "Ale"),
+        ("lager", "Lager"),
+    )
+    with SessionLocal() as session:
+        changed = False
+        for slug, name in builtin_profiles:
+            profile = session.scalar(
+                select(FermentationProfile).where(FermentationProfile.slug == slug)
+            )
+            if profile is not None:
+                continue
+            session.add(
+                FermentationProfile(
+                    slug=slug,
+                    name=name,
+                    source="builtin",
+                    is_builtin=True,
+                    profile_data=_build_builtin_profile_payload(slug),
+                )
+            )
+            changed = True
+        if changed:
+            session.commit()
+
+
+def _ensure_unique_profile_slug(session, name: str, *, preferred_slug: str | None = None) -> str:
+    base_slug = preferred_slug or _slugify(name)
+    slug = base_slug
+    suffix = 2
+    while session.scalar(select(FermentationProfile).where(FermentationProfile.slug == slug)) is not None:
+        slug = f"{base_slug}-{suffix}"
+        suffix += 1
+    return slug
 
 
 def _load_device_telemetry(
@@ -337,6 +433,202 @@ def _store_profile_payload(config: DeviceFermentationConfig, payload: dict) -> N
         config.profile_plan = profile if isinstance(profile, dict) else _default_profile_plan(config)
     else:
         config.profile_plan = None
+
+
+def _build_profile_step_id(label: str, index: int, used_ids: set[str]) -> str:
+    base_id = _slugify(label, fallback=f"step-{index + 1}")
+    candidate = base_id
+    suffix = 2
+    while candidate in used_ids:
+        candidate = f"{base_id}-{suffix}"
+        suffix += 1
+    used_ids.add(candidate)
+    return candidate
+
+
+def _validate_profile_library_steps(steps_payload: object) -> list[dict]:
+    if not isinstance(steps_payload, list) or not steps_payload:
+        raise ValueError("Profile must include at least one step.")
+    if len(steps_payload) > MAX_LIBRARY_PROFILE_STEPS:
+        raise ValueError(f"Profile must include 1-{MAX_LIBRARY_PROFILE_STEPS} steps.")
+
+    normalized_steps: list[dict] = []
+    used_ids: set[str] = set()
+    for index, raw_step in enumerate(steps_payload):
+        if not isinstance(raw_step, dict):
+            raise ValueError(f"steps[{index}] must be an object.")
+
+        label = str(raw_step.get("label", "")).strip() or f"Step {index + 1}"
+        try:
+            target_c = float(raw_step["target_c"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"steps[{index}].target_c must be numeric.") from None
+        if target_c < MIN_PROFILE_TARGET_C or target_c > MAX_PROFILE_TARGET_C:
+            raise ValueError(
+                f"steps[{index}].target_c must be between {MIN_PROFILE_TARGET_C} and {MAX_PROFILE_TARGET_C}."
+            )
+
+        try:
+            hold_duration_s = int(raw_step["hold_duration_s"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"steps[{index}].hold_duration_s must be an integer.") from None
+        if hold_duration_s < 0 or hold_duration_s > MAX_PROFILE_DURATION_S:
+            raise ValueError(
+                f"steps[{index}].hold_duration_s must be between 0 and {MAX_PROFILE_DURATION_S}."
+            )
+
+        advance_policy = str(raw_step.get("advance_policy", "auto")).strip() or "auto"
+        if advance_policy not in {"auto", "manual_release"}:
+            raise ValueError(f"steps[{index}].advance_policy must be auto or manual_release.")
+
+        ramp = raw_step.get("ramp")
+        normalized_step = {
+            "id": _build_profile_step_id(label, index, used_ids),
+            "label": label,
+            "target_c": target_c,
+            "hold_duration_s": hold_duration_s,
+            "advance_policy": advance_policy,
+        }
+        if ramp is not None:
+            if not isinstance(ramp, dict):
+                raise ValueError(f"steps[{index}].ramp must be an object.")
+            ramp_mode = str(ramp.get("mode", "")).strip()
+            if ramp_mode != "time":
+                raise ValueError(f"steps[{index}].ramp.mode must be time.")
+            try:
+                ramp_duration_s = int(ramp["duration_s"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"steps[{index}].ramp.duration_s must be an integer.") from None
+            if ramp_duration_s < 0 or ramp_duration_s > MAX_PROFILE_DURATION_S:
+                raise ValueError(
+                    f"steps[{index}].ramp.duration_s must be between 0 and {MAX_PROFILE_DURATION_S}."
+                )
+            if ramp_duration_s > 0:
+                normalized_step["ramp"] = {
+                    "mode": "time",
+                    "duration_s": ramp_duration_s,
+                }
+        normalized_steps.append(normalized_step)
+    return normalized_steps
+
+
+def _build_profile_library_payload(name: str, steps_payload: object) -> dict:
+    return {
+        "schema_version": 1,
+        "steps": _validate_profile_library_steps(steps_payload),
+    }
+
+
+def _serialize_profile_summary(profile: FermentationProfile) -> dict:
+    steps = profile.profile_data.get("steps", [])
+    total_duration_s = 0
+    for step in steps:
+        total_duration_s += int(step.get("hold_duration_s", 0))
+        ramp = step.get("ramp")
+        if isinstance(ramp, dict) and ramp.get("mode") == "time":
+            total_duration_s += int(ramp.get("duration_s", 0))
+    return {
+        "slug": profile.slug,
+        "name": profile.name,
+        "source": profile.source,
+        "is_builtin": profile.is_builtin,
+        "imported_from": profile.imported_from,
+        "step_count": len(steps),
+        "total_duration_s": total_duration_s,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
+
+
+def _build_device_profile_from_library(profile: FermentationProfile) -> dict:
+    steps = []
+    for step in profile.profile_data.get("steps", []):
+        entry = {
+            "id": step["id"],
+            "label": step["label"],
+            "target_c": step["target_c"],
+            "hold_duration_s": step["hold_duration_s"],
+            "advance_policy": step["advance_policy"],
+        }
+        ramp = step.get("ramp")
+        if isinstance(ramp, dict) and ramp.get("mode") == "time" and int(ramp.get("duration_s", 0)) > 0:
+            entry["ramp_duration_s"] = int(ramp["duration_s"])
+        steps.append(entry)
+    return {
+        "id": profile.slug,
+        "steps": steps,
+    }
+
+
+def _serialize_profile_detail(profile: FermentationProfile) -> dict:
+    payload = _serialize_profile_summary(profile)
+    payload["steps"] = profile.profile_data.get("steps", [])
+    payload["schema_version"] = int(profile.profile_data.get("schema_version", 1))
+    payload["device_profile"] = _build_device_profile_from_library(profile)
+    return payload
+
+
+def _read_xml_text(raw_bytes: bytes) -> bytes:
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        return raw_bytes[3:]
+    return raw_bytes
+
+
+def _parse_beerxml_profile(raw_bytes: bytes, filename: str | None = None) -> tuple[str, dict]:
+    try:
+        root = ET.fromstring(_read_xml_text(raw_bytes))
+    except ET.ParseError as exc:
+        raise ValueError(f"BeerXML parse error: {exc}") from None
+
+    recipe = root.find("RECIPE")
+    if recipe is None:
+        raise ValueError("BeerXML file must include a RECIPE node.")
+
+    def _text(field: str) -> str:
+        value = recipe.findtext(field)
+        return value.strip() if isinstance(value, str) else ""
+
+    profile_name = _text("BF_FERMENTATION_PROFILE_NAME") or _text("NAME") or "Imported profile"
+    stage_specs = (
+        ("PRIMARY", "Primary"),
+        ("SECONDARY", "Secondary"),
+        ("TERTIARY", "Tertiary"),
+        ("AGE", "Ageing"),
+    )
+    imported_steps = []
+    for prefix, label in stage_specs:
+        age_text = _text(f"{prefix}_AGE")
+        temp_text = _text(f"{prefix}_TEMP")
+        if not age_text and not temp_text:
+            continue
+        if not age_text or not temp_text:
+            raise ValueError(f"BeerXML {prefix.lower()} stage must include both age and temperature.")
+        try:
+            age_days = float(age_text)
+            target_c = float(temp_text)
+        except ValueError:
+            raise ValueError(f"BeerXML {prefix.lower()} stage contains invalid numeric values.") from None
+        imported_steps.append(
+            _build_profile_step(
+                step_id=f"step-{len(imported_steps) + 1}",
+                label=label,
+                target_c=target_c,
+                hold_duration_s=_profile_step_duration(age_days),
+                advance_policy="auto",
+            )
+        )
+
+    if not imported_steps:
+        raise ValueError("BeerXML file did not contain supported fermentation stages.")
+    if len(imported_steps) > MAX_LIBRARY_PROFILE_STEPS:
+        raise ValueError(
+            f"BeerXML profile contains {len(imported_steps)} stages, but the web profile manager supports at most {MAX_LIBRARY_PROFILE_STEPS}."
+        )
+
+    return profile_name, {
+        "schema_version": 1,
+        "steps": _validate_profile_library_steps(imported_steps),
+        "source_filename": filename,
+    }
 
 
 def _build_profile_command_payload(command: str, step_id: str | None = None) -> dict:
@@ -631,6 +923,150 @@ def dashboard(request: Request):
             "format_timestamp": _format_timestamp,
         },
     )
+
+
+@app.get("/profiles", response_class=HTMLResponse)
+def profiles_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "profiles.html",
+        {
+            "page_title": "Fermentation Profiles",
+        },
+    )
+
+
+@app.get("/api/fermentation-profiles")
+def list_fermentation_profiles():
+    with SessionLocal() as session:
+        profiles = session.scalars(
+            select(FermentationProfile).order_by(
+                desc(FermentationProfile.is_builtin),
+                FermentationProfile.name,
+            )
+        ).all()
+        return JSONResponse([_serialize_profile_summary(profile) for profile in profiles])
+
+
+@app.get("/api/fermentation-profiles/{profile_slug}")
+def fermentation_profile_detail(profile_slug: str):
+    with SessionLocal() as session:
+        profile = session.scalar(
+            select(FermentationProfile).where(FermentationProfile.slug == profile_slug)
+        )
+        if profile is None:
+            return JSONResponse({"error": "Profile not found"}, status_code=404)
+        return JSONResponse(_serialize_profile_detail(profile))
+
+
+@app.post("/api/fermentation-profiles")
+async def create_fermentation_profile(request: Request):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
+
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        return JSONResponse({"error": "Profile name is required"}, status_code=400)
+
+    try:
+        profile_data = _build_profile_library_payload(name, payload.get("steps"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with SessionLocal() as session:
+        profile = FermentationProfile(
+            slug=_ensure_unique_profile_slug(session, name),
+            name=name,
+            source="manual",
+            is_builtin=False,
+            profile_data=profile_data,
+        )
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+        return JSONResponse(_serialize_profile_detail(profile), status_code=201)
+
+
+@app.put("/api/fermentation-profiles/{profile_slug}")
+async def update_fermentation_profile(request: Request, profile_slug: str):
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Expected JSON object"}, status_code=400)
+
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        return JSONResponse({"error": "Profile name is required"}, status_code=400)
+
+    try:
+        profile_data = _build_profile_library_payload(name, payload.get("steps"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with SessionLocal() as session:
+        profile = session.scalar(
+            select(FermentationProfile).where(FermentationProfile.slug == profile_slug)
+        )
+        if profile is None:
+            return JSONResponse({"error": "Profile not found"}, status_code=404)
+        if profile.is_builtin:
+            return JSONResponse({"error": "Built-in profiles cannot be updated"}, status_code=400)
+
+        profile.name = name
+        profile.profile_data = profile_data
+        session.commit()
+        session.refresh(profile)
+        return JSONResponse(_serialize_profile_detail(profile))
+
+
+@app.delete("/api/fermentation-profiles/{profile_slug}")
+def delete_fermentation_profile(profile_slug: str):
+    with SessionLocal() as session:
+        profile = session.scalar(
+            select(FermentationProfile).where(FermentationProfile.slug == profile_slug)
+        )
+        if profile is None:
+            return JSONResponse({"error": "Profile not found"}, status_code=404)
+        if profile.is_builtin:
+            return JSONResponse({"error": "Built-in profiles cannot be deleted"}, status_code=400)
+        session.delete(profile)
+        session.commit()
+        return JSONResponse({"status": "deleted"})
+
+
+@app.post("/api/fermentation-profiles/import/beerxml")
+async def import_fermentation_profile_beerxml(file: UploadFile = File(...)):
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        return JSONResponse({"error": "Uploaded file is empty"}, status_code=400)
+
+    try:
+        name, parsed_payload = _parse_beerxml_profile(raw_bytes, file.filename)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with SessionLocal() as session:
+        profile = FermentationProfile(
+            slug=_ensure_unique_profile_slug(session, name),
+            name=name,
+            source="beerxml",
+            is_builtin=False,
+            imported_from=file.filename or None,
+            profile_data={
+                "schema_version": parsed_payload["schema_version"],
+                "steps": parsed_payload["steps"],
+            },
+        )
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+        return JSONResponse(_serialize_profile_detail(profile), status_code=201)
 
 
 @app.get("/devices/{device_id}", response_class=HTMLResponse)
