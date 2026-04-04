@@ -51,6 +51,77 @@ IPAddress parseIpOrDefault(const String& value) {
     }
     return IPAddress(192, 168, 4, 1);
 }
+
+void appendTextField(
+    String& page,
+    const char* label,
+    const char* name,
+    const String& value,
+    const char* type = "text",
+    const char* inputMode = nullptr) {
+    page += "<label class='field'><span class='field-label'>" + String(label) + "</span><input name='"
+            + String(name) + "' type='" + String(type) + "'";
+    if (inputMode != nullptr) {
+        page += " inputmode='" + String(inputMode) + "'";
+    }
+    page += " value='" + htmlEscape(value) + "'></label>";
+}
+
+void appendPasswordField(String& page, const char* label, const char* name, const String& value) {
+    page += "<label class='field'><span class='field-label'>" + String(label) + "</span>";
+    page += "<span class='password-field'><input name='" + String(name)
+            + "' type='password' value='" + htmlEscape(value) + "'>";
+    page += "<button class='password-toggle' type='button' data-password-toggle aria-label='Show password' aria-pressed='false'>";
+    page += "<svg viewBox='0 0 24 24' aria-hidden='true' focusable='false'><path d='M12 5C7 5 2.73 8.11 1 12c1.73 3.89 6 7 11 7s9.27-3.11 11-7c-1.73-3.89-6-7-11-7Zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8Zm0-2.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z'/></svg>";
+    page += "</button></span></label>";
+}
+
+void appendNumberField(String& page, const char* label, const char* name, long value) {
+    appendTextField(page, label, name, String(value), "number", "numeric");
+}
+
+void appendCheckboxField(String& page, const char* name, const char* label, bool checked) {
+    page += "<label class='toggle'><input type='checkbox' name='" + String(name) + "'";
+    if (checked) {
+        page += " checked";
+    }
+    page += "><span>" + String(label) + "</span></label>";
+}
+
+void appendSectionHeader(String& page, const char* eyebrow, const char* title, const char* description) {
+    page += "<section class='card'><div class='section-heading'><p class='eyebrow'>" + String(eyebrow)
+            + "</p><h2>" + String(title) + "</h2><p>" + String(description) + "</p></div>";
+}
+
+String buildSavedHtmlPage() {
+    String page;
+    page.reserve(1792);
+    page += "<!doctype html><html><head><meta charset='utf-8'>";
+    page += "<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>";
+    page += "<title>brewesp setup</title>";
+    page += "<style>";
+    page +=
+        ":root{color-scheme:light;font-family:Inter,Segoe UI,Arial,sans-serif;"
+        "--bg:#f4f7fb;--panel:#ffffff;--text:#142033;--muted:#5f6f86;--line:#d8e0ec;"
+        "--accent:#0f766e;--accent-strong:#115e59;--shadow:0 18px 48px rgba(15,23,42,.12);}"
+        "*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:24px;background:linear-gradient(180deg,#eef7f7 0%,#f7fafc 100%);"
+        "color:var(--text);display:flex;align-items:center;justify-content:center}"
+        ".panel{width:min(100%,560px);background:var(--panel);border:1px solid rgba(216,224,236,.9);"
+        "border-radius:24px;padding:28px;box-shadow:var(--shadow)}"
+        ".badge{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;"
+        "background:#dcfce7;color:#166534;font-size:13px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}"
+        "h1{margin:18px 0 12px;font-size:clamp(28px,6vw,38px);line-height:1.05}"
+        "p{margin:0 0 18px;color:var(--muted);font-size:15px;line-height:1.6}"
+        ".button{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 18px;"
+        "border-radius:14px;background:var(--accent);color:#fff;text-decoration:none;font-weight:700}"
+        ".button:active{background:var(--accent-strong)}"
+        "</style></head><body><main class='panel'><span class='badge'>Configuration saved</span>";
+    page += "<h1>brewesp is restarting</h1>";
+    page += "<p>Your settings were stored successfully. Keep this page open for a moment, then reconnect to the device on your normal Wi-Fi network.</p>";
+    page += "<a class='button' href='/'>Reload setup page</a>";
+    page += "</main></body></html>";
+    return page;
+}
 }
 
 bool ProvisioningManager::begin(const SystemConfig& currentConfig, SaveCallback onSave) {
@@ -184,37 +255,102 @@ void ProvisioningManager::handleSave() {
     }
 
     restartRequested_ = true;
-    server_.send(
-        200,
-        "text/html",
-        "<html><body><h1>Configuration saved</h1><p>Device will restart.</p></body></html>");
+    server_.send(200, "text/html", buildSavedHtmlPage());
 }
 
 String ProvisioningManager::buildHtmlPage() const {
     String page;
-    page.reserve(6144);
-    page += "<!doctype html><html><head><meta charset='utf-8'><title>brewesp setup</title>";
-    page += "<style>body{font-family:sans-serif;max-width:820px;margin:2rem auto;padding:0 1rem;}label{display:block;margin-top:1rem;}input,select{width:100%;padding:.45rem;}fieldset{margin-top:1rem;}button{margin-top:1rem;padding:.7rem 1rem;}</style>";
-    page += "</head><body><h1>brewesp setup</h1>";
-    page += "<p>Recovery AP: <strong>" + htmlEscape(accessPointSsid_) + "</strong> at <strong>"
-            + WiFi.softAPIP().toString() + "</strong></p>";
+    page.reserve(16384);
+    page += "<!doctype html><html><head><meta charset='utf-8'>";
+    page += "<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>";
+    page += "<title>brewesp setup</title>";
+    page += "<style>";
+    page +=
+        ":root{color-scheme:light;font-family:Inter,Segoe UI,Arial,sans-serif;"
+        "--bg:#f3f7fb;--panel:#ffffff;--panel-alt:#f8fbff;--text:#122033;--muted:#5f6f86;"
+        "--line:#d7dfeb;--line-strong:#bfd0e3;--accent:#0f766e;--accent-strong:#115e59;"
+        "--accent-soft:#dff5f1;--chip:#edf4ff;--shadow:0 22px 60px rgba(15,23,42,.12);}"
+        "*{box-sizing:border-box}html{font-size:16px}body{margin:0;background:radial-gradient(circle at top,#e6f5f2 0,#f4f7fb 42%,#eef3f9 100%);"
+        "color:var(--text)}main{width:min(100%,1120px);margin:0 auto;padding:20px 14px 32px}"
+        ".hero{position:relative;overflow:hidden;background:linear-gradient(145deg,#0f172a 0%,#15325d 55%,#0f766e 100%);"
+        "color:#fff;border-radius:28px;padding:24px;box-shadow:var(--shadow)}"
+        ".hero:after{content:'';position:absolute;inset:auto -60px -80px auto;width:220px;height:220px;border-radius:50%;"
+        "background:radial-gradient(circle,rgba(255,255,255,.22) 0,rgba(255,255,255,0) 72%)}"
+        ".eyebrow{margin:0 0 8px;font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;opacity:.78}"
+        "h1{margin:0;font-size:clamp(2rem,8vw,3.4rem);line-height:1.02;letter-spacing:-.04em;max-width:10ch}"
+        ".hero-copy{margin:14px 0 0;color:rgba(255,255,255,.82);font-size:15px;line-height:1.6;max-width:44rem}"
+        ".status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:18px}"
+        ".status-card{backdrop-filter:blur(14px);background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);"
+        "border-radius:18px;padding:14px 16px}.status-label{display:block;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;opacity:.72}"
+        ".status-value{display:block;margin-top:6px;font-size:16px;font-weight:700;line-height:1.35;word-break:break-word}"
+        "form{display:grid;gap:16px;margin-top:16px}.card{background:rgba(255,255,255,.92);border:1px solid rgba(215,223,235,.92);"
+        "border-radius:24px;padding:18px;box-shadow:0 12px 32px rgba(15,23,42,.05)}"
+        ".section-heading{margin-bottom:14px}.section-heading h2{margin:0;font-size:1.25rem;letter-spacing:-.02em}"
+        ".section-heading p{margin:8px 0 0;color:var(--muted);font-size:14px;line-height:1.55}"
+        ".grid{display:grid;grid-template-columns:1fr;gap:12px}.field,.toggle{display:block}.field-label{display:block;margin-bottom:6px;"
+        "font-size:13px;font-weight:700;color:#334155}.field input,.field select{width:100%;min-height:48px;border-radius:14px;"
+        "border:1px solid var(--line);background:var(--panel-alt);padding:12px 14px;font:inherit;color:var(--text);appearance:none}"
+        ".field input:focus,.field select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 4px rgba(15,118,110,.14)}"
+        ".password-field{display:grid;grid-template-columns:minmax(0,1fr) 52px;gap:8px;align-items:center}"
+        ".password-field input{margin:0}.password-toggle{display:inline-flex;align-items:center;justify-content:center;min-height:48px;"
+        "border:1px solid var(--line);border-radius:14px;background:var(--panel-alt);color:#334155;padding:0;cursor:pointer}"
+        ".password-toggle svg{width:20px;height:20px;fill:currentColor}.password-toggle:focus{outline:none;border-color:var(--accent);"
+        "box-shadow:0 0 0 4px rgba(15,118,110,.14)}.password-toggle[aria-pressed='true']{background:var(--accent-soft);color:var(--accent-strong)}"
+        ".toggle{display:flex;align-items:center;gap:12px;min-height:52px;border:1px solid var(--line);border-radius:16px;"
+        "background:var(--panel-alt);padding:12px 14px;font-weight:600;color:#243247}"
+        ".toggle input{width:20px;height:20px;margin:0;accent-color:var(--accent);flex:0 0 auto}"
+        ".actions{position:sticky;bottom:12px;background:rgba(244,247,251,.84);backdrop-filter:blur(12px);border:1px solid rgba(215,223,235,.9);"
+        "border-radius:22px;padding:12px;box-shadow:0 10px 30px rgba(15,23,42,.08)}"
+        ".actions p{margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.45}.button{width:100%;min-height:52px;border:0;"
+        "border-radius:16px;padding:0 18px;background:linear-gradient(135deg,var(--accent) 0%,#0b8c80 100%);color:#fff;font:inherit;font-weight:800;"
+        "letter-spacing:.01em;box-shadow:0 14px 28px rgba(15,118,110,.24)}"
+        ".button:active{transform:translateY(1px)}@media (min-width:720px){main{padding:24px 20px 40px}.hero{padding:30px}"
+        ".card{padding:24px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.grid .full{grid-column:1 / -1}.actions{padding:14px 16px}}";
+    page += "</style></head><body><main>";
+    page += "<section class='hero'><p class='eyebrow'>First-time setup</p><h1>brewesp firmware v2</h1>";
+    page += "<p class='hero-copy'>Connect the controller to Wi-Fi, point it at your MQTT broker, and choose how heating and cooling are wired. This page is hosted directly on the ESP recovery access point.</p>";
+    page += "<div class='status-grid'>";
+    page += "<div class='status-card'><span class='status-label'>Recovery AP</span><span class='status-value'>"
+            + htmlEscape(accessPointSsid_) + "</span></div>";
+    page += "<div class='status-card'><span class='status-label'>Setup IP</span><span class='status-value'>"
+            + WiFi.softAPIP().toString() + "</span></div>";
+    page += "<div class='status-card'><span class='status-label'>Current device ID</span><span class='status-value'>"
+            + htmlEscape(currentConfig_.deviceId) + "</span></div>";
+    page += "</div></section>";
     page += "<form method='post' action='/save'>";
 
-    page += "<label>Device ID<input name='device_id' value='" + htmlEscape(currentConfig_.deviceId) + "'></label>";
-    page += "<label>Wi-Fi SSID<input name='wifi_ssid' value='" + htmlEscape(currentConfig_.wifi.ssid) + "'></label>";
-    page += "<label>Wi-Fi password<input name='wifi_password' type='password' value='" + htmlEscape(currentConfig_.wifi.password) + "'></label>";
+    appendSectionHeader(
+        page,
+        "Basics",
+        "Device and Wi-Fi",
+        "These settings get the ESP onto your normal network so the rest of the stack can find it.");
+    page += "<div class='grid'>";
+    appendTextField(page, "Device ID", "device_id", currentConfig_.deviceId);
+    appendTextField(page, "Wi-Fi SSID", "wifi_ssid", currentConfig_.wifi.ssid);
+    appendPasswordField(page, "Wi-Fi password", "wifi_password", currentConfig_.wifi.password);
+    page += "</div></section>";
 
-    page += "<fieldset><legend>MQTT</legend>";
-    page += "<label>Host<input name='mqtt_host' value='" + htmlEscape(currentConfig_.mqtt.host) + "'></label>";
-    page += "<label>Port<input name='mqtt_port' type='number' value='" + String(currentConfig_.mqtt.port) + "'></label>";
-    page += "<label>Client ID<input name='mqtt_client_id' value='" + htmlEscape(currentConfig_.mqtt.clientId) + "'></label>";
-    page += "<label>Username<input name='mqtt_username' value='" + htmlEscape(currentConfig_.mqtt.username) + "'></label>";
-    page += "<label>Password<input name='mqtt_password' type='password' value='" + htmlEscape(currentConfig_.mqtt.password) + "'></label>";
-    page += "<label>Topic prefix<input name='mqtt_topic_prefix' value='" + htmlEscape(currentConfig_.mqtt.topicPrefix) + "'></label>";
-    page += "</fieldset>";
+    appendSectionHeader(
+        page,
+        "Messaging",
+        "MQTT",
+        "Broker details used for telemetry, state, and remote configuration.");
+    page += "<div class='grid'>";
+    appendTextField(page, "Host", "mqtt_host", currentConfig_.mqtt.host);
+    appendNumberField(page, "Port", "mqtt_port", currentConfig_.mqtt.port);
+    appendTextField(page, "Client ID", "mqtt_client_id", currentConfig_.mqtt.clientId);
+    appendTextField(page, "Username", "mqtt_username", currentConfig_.mqtt.username);
+    appendPasswordField(page, "Password", "mqtt_password", currentConfig_.mqtt.password);
+    appendTextField(page, "Topic prefix", "mqtt_topic_prefix", currentConfig_.mqtt.topicPrefix);
+    page += "</div></section>";
 
-    page += "<fieldset><legend>Heating output</legend>";
-    page += "<label>Driver<select name='heating_driver'>";
+    appendSectionHeader(
+        page,
+        "Outputs",
+        "Heating output",
+        "Select the driver and target used when the controller asks for heat.");
+    page += "<div class='grid'>";
+    page += "<label class='field'><span class='field-label'>Driver</span><select name='heating_driver'>";
     for (const char* option : {"kasa_local", "gpio", "shelly_http_rpc"}) {
         page += "<option value='" + String(option) + "'";
         if (driverName(currentConfig_.heatingOutput.driver) == option) {
@@ -223,14 +359,19 @@ String ProvisioningManager::buildHtmlPage() const {
         page += ">" + String(option) + "</option>";
     }
     page += "</select></label>";
-    page += "<label>Host<input name='heating_host' value='" + htmlEscape(currentConfig_.heatingOutput.host) + "'></label>";
-    page += "<label>Port<input name='heating_port' type='number' value='" + String(currentConfig_.heatingOutput.port) + "'></label>";
-    page += "<label>GPIO pin<input name='heating_pin' type='number' value='" + String(currentConfig_.heatingOutput.pin) + "'></label>";
-    page += "<label>Alias<input name='heating_alias' value='" + htmlEscape(currentConfig_.heatingOutput.alias) + "'></label>";
-    page += "</fieldset>";
+    appendTextField(page, "Host", "heating_host", currentConfig_.heatingOutput.host);
+    appendNumberField(page, "Port", "heating_port", currentConfig_.heatingOutput.port);
+    appendNumberField(page, "GPIO pin", "heating_pin", currentConfig_.heatingOutput.pin);
+    appendTextField(page, "Alias", "heating_alias", currentConfig_.heatingOutput.alias);
+    page += "</div></section>";
 
-    page += "<fieldset><legend>Cooling output</legend>";
-    page += "<label>Driver<select name='cooling_driver'>";
+    appendSectionHeader(
+        page,
+        "Outputs",
+        "Cooling output",
+        "Select the driver and target used when the controller asks for cooling.");
+    page += "<div class='grid'>";
+    page += "<label class='field'><span class='field-label'>Driver</span><select name='cooling_driver'>";
     for (const char* option : {"kasa_local", "gpio", "shelly_http_rpc"}) {
         page += "<option value='" + String(option) + "'";
         if (driverName(currentConfig_.coolingOutput.driver) == option) {
@@ -239,38 +380,32 @@ String ProvisioningManager::buildHtmlPage() const {
         page += ">" + String(option) + "</option>";
     }
     page += "</select></label>";
-    page += "<label>Host<input name='cooling_host' value='" + htmlEscape(currentConfig_.coolingOutput.host) + "'></label>";
-    page += "<label>Port<input name='cooling_port' type='number' value='" + String(currentConfig_.coolingOutput.port) + "'></label>";
-    page += "<label>GPIO pin<input name='cooling_pin' type='number' value='" + String(currentConfig_.coolingOutput.pin) + "'></label>";
-    page += "<label>Alias<input name='cooling_alias' value='" + htmlEscape(currentConfig_.coolingOutput.alias) + "'></label>";
-    page += "</fieldset>";
+    appendTextField(page, "Host", "cooling_host", currentConfig_.coolingOutput.host);
+    appendNumberField(page, "Port", "cooling_port", currentConfig_.coolingOutput.port);
+    appendNumberField(page, "GPIO pin", "cooling_pin", currentConfig_.coolingOutput.pin);
+    appendTextField(page, "Alias", "cooling_alias", currentConfig_.coolingOutput.alias);
+    page += "</div></section>";
 
-    page += "<fieldset><legend>Local hardware</legend>";
-    page += "<label><input type='checkbox' name='local_ui_enabled' ";
-    if (currentConfig_.localUi.enabled) {
-        page += "checked";
-    }
-    page += "> Enable local UI</label>";
-    page += "<label><input type='checkbox' name='display_enabled' ";
-    if (currentConfig_.display.enabled) {
-        page += "checked";
-    }
-    page += "> Display connected</label>";
-    page += "<label><input type='checkbox' name='buttons_enabled' ";
-    if (currentConfig_.buttons.enabled) {
-        page += "checked";
-    }
-    page += "> Buttons connected</label>";
-    page += "</fieldset>";
+    appendSectionHeader(
+        page,
+        "Hardware",
+        "Local peripherals",
+        "Turn these on only for hardware that is actually attached to this controller.");
+    page += "<div class='grid'>";
+    appendCheckboxField(page, "local_ui_enabled", "Enable local UI", currentConfig_.localUi.enabled);
+    appendCheckboxField(page, "display_enabled", "Display connected", currentConfig_.display.enabled);
+    appendCheckboxField(page, "buttons_enabled", "Buttons connected", currentConfig_.buttons.enabled);
+    page += "</div></section>";
 
-    page += "<fieldset><legend>OTA</legend>";
-    page += "<label><input type='checkbox' name='ota_enabled' ";
-    if (currentConfig_.ota.enabled) {
-        page += "checked";
-    }
-    page += "> Enable OTA updates</label>";
-    page += "<label>Manifest URL<input name='ota_manifest_url' value='" + htmlEscape(currentConfig_.ota.manifestUrl) + "'></label>";
-    page += "<label>Channel<select name='ota_channel'>";
+    appendSectionHeader(
+        page,
+        "Updates",
+        "OTA",
+        "Firmware update settings stored locally on the ESP.");
+    page += "<div class='grid'>";
+    appendCheckboxField(page, "ota_enabled", "Enable OTA updates", currentConfig_.ota.enabled);
+    appendTextField(page, "Manifest URL", "ota_manifest_url", currentConfig_.ota.manifestUrl);
+    page += "<label class='field'><span class='field-label'>Channel</span><select name='ota_channel'>";
     for (const char* option : {"stable", "beta"}) {
         page += "<option value='" + String(option) + "'";
         if (currentConfig_.ota.channel == option) {
@@ -279,7 +414,7 @@ String ProvisioningManager::buildHtmlPage() const {
         page += ">" + String(option) + "</option>";
     }
     page += "</select></label>";
-    page += "<label>Check strategy<select name='ota_check_strategy'>";
+    page += "<label class='field'><span class='field-label'>Check strategy</span><select name='ota_check_strategy'>";
     for (const char* option : {"manual", "scheduled"}) {
         page += "<option value='" + String(option) + "'";
         if (currentConfig_.ota.checkStrategy == option) {
@@ -288,18 +423,24 @@ String ProvisioningManager::buildHtmlPage() const {
         page += ">" + String(option) + "</option>";
     }
     page += "</select></label>";
-    page += "<label>Check interval (seconds)<input name='ota_check_interval_s' type='number' value='"
-            + String(currentConfig_.ota.checkIntervalSeconds) + "'></label>";
-    page += "<label>TLS certificate fingerprint<input name='ota_ca_cert_fingerprint' value='"
-            + htmlEscape(currentConfig_.ota.caCertFingerprint) + "'></label>";
-    page += "<label><input type='checkbox' name='ota_allow_http' ";
-    if (currentConfig_.ota.allowHttp) {
-        page += "checked";
-    }
-    page += "> Allow plain HTTP OTA</label>";
-    page += "</fieldset>";
+    appendNumberField(
+        page,
+        "Check interval (seconds)",
+        "ota_check_interval_s",
+        currentConfig_.ota.checkIntervalSeconds);
+    appendTextField(
+        page,
+        "TLS certificate fingerprint",
+        "ota_ca_cert_fingerprint",
+        currentConfig_.ota.caCertFingerprint);
+    appendCheckboxField(page, "ota_allow_http", "Allow plain HTTP OTA", currentConfig_.ota.allowHttp);
+    page += "</div></section>";
 
-    page += "<button type='submit'>Save and reboot</button></form></body></html>";
+    page += "<section class='actions'><p>Saving writes the local system configuration to NVS and restarts the ESP so the new network settings can take effect.</p>";
+    page += "<button class='button' type='submit'>Save and reboot</button></section>";
+    page += "</form>";
+    page += "<script>(function(){var toggles=document.querySelectorAll('[data-password-toggle]');for(var i=0;i<toggles.length;i++){toggles[i].addEventListener('click',function(){var field=this.parentElement.querySelector('input');if(!field){return;}var showing=field.type==='text';field.type=showing?'password':'text';this.setAttribute('aria-pressed',showing?'false':'true');this.setAttribute('aria-label',showing?'Show password':'Hide password');});}})();</script>";
+    page += "</main></body></html>";
     return page;
 }
 
