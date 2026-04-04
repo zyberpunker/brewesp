@@ -33717,9 +33717,11 @@ function SF(e, t) {
 function CF(e) {
 	let t = new Set(e.discovered_relays.map((e) => e.host)), n = e.heating.host ?? "", r = e.cooling.host ?? "";
 	return {
+		heating_driver: e.heating.driver || "kasa_local",
 		heating_selected_host: t.has(n) ? n : "",
 		heating_manual_host: t.has(n) ? "" : n,
 		heating_alias: e.heating.alias ?? "",
+		cooling_driver: e.cooling.driver || "kasa_local",
 		cooling_selected_host: t.has(r) ? r : "",
 		cooling_manual_host: t.has(r) ? "" : r,
 		cooling_alias: e.cooling.alias ?? ""
@@ -33910,10 +33912,12 @@ function TF({ deviceId: e, initialLivePayload: t, initialTelemetry: n }) {
 			let n = t.heating_manual_host.trim() || t.heating_selected_host.trim(), r = t.cooling_manual_host.trim() || t.cooling_selected_host.trim();
 			return wr(e, {
 				heating: {
+					driver: t.heating_driver,
 					host: n,
 					alias: t.heating_alias.trim()
 				},
 				cooling: {
+					driver: t.cooling_driver,
 					host: r,
 					alias: t.cooling_alias.trim()
 				}
@@ -34891,11 +34895,27 @@ function TF({ deviceId: e, initialLivePayload: t, initialTelemetry: n }) {
 											}),
 											/* @__PURE__ */ (0, R.jsxs)("label", {
 												className: "grid gap-2 text-sm font-semibold text-[var(--ink)]",
+												children: ["Driver", /* @__PURE__ */ (0, R.jsxs)("select", {
+													className: "min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]",
+													value: O.heating_driver,
+													onChange: (e) => je("heating_driver", e.target.value),
+													children: [/* @__PURE__ */ (0, R.jsx)("option", {
+														value: "kasa_local",
+														children: "Kasa local"
+													}), /* @__PURE__ */ (0, R.jsx)("option", {
+														value: "shelly_http_rpc",
+														children: "Shelly HTTP RPC"
+													})]
+												})]
+											}),
+											/* @__PURE__ */ (0, R.jsxs)("label", {
+												className: "grid gap-2 text-sm font-semibold text-[var(--ink)]",
 												children: ["Discovered relay", /* @__PURE__ */ (0, R.jsxs)("select", {
 													className: "min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]",
 													value: O.heating_selected_host,
 													onChange: (e) => {
-														je("heating_selected_host", e.target.value), je("heating_manual_host", "");
+														let t = (re.data?.discovered_relays ?? []).find((t) => t.host === e.target.value);
+														je("heating_selected_host", e.target.value), je("heating_manual_host", ""), t && je("heating_driver", t.driver);
 													},
 													children: [/* @__PURE__ */ (0, R.jsx)("option", {
 														value: "",
@@ -34939,11 +34959,27 @@ function TF({ deviceId: e, initialLivePayload: t, initialTelemetry: n }) {
 											}),
 											/* @__PURE__ */ (0, R.jsxs)("label", {
 												className: "grid gap-2 text-sm font-semibold text-[var(--ink)]",
+												children: ["Driver", /* @__PURE__ */ (0, R.jsxs)("select", {
+													className: "min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]",
+													value: O.cooling_driver,
+													onChange: (e) => je("cooling_driver", e.target.value),
+													children: [/* @__PURE__ */ (0, R.jsx)("option", {
+														value: "kasa_local",
+														children: "Kasa local"
+													}), /* @__PURE__ */ (0, R.jsx)("option", {
+														value: "shelly_http_rpc",
+														children: "Shelly HTTP RPC"
+													})]
+												})]
+											}),
+											/* @__PURE__ */ (0, R.jsxs)("label", {
+												className: "grid gap-2 text-sm font-semibold text-[var(--ink)]",
 												children: ["Discovered relay", /* @__PURE__ */ (0, R.jsxs)("select", {
 													className: "min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]",
 													value: O.cooling_selected_host,
 													onChange: (e) => {
-														je("cooling_selected_host", e.target.value), je("cooling_manual_host", "");
+														let t = (re.data?.discovered_relays ?? []).find((t) => t.host === e.target.value);
+														je("cooling_selected_host", e.target.value), je("cooling_manual_host", ""), t && je("cooling_driver", t.driver);
 													},
 													children: [/* @__PURE__ */ (0, R.jsx)("option", {
 														value: "",

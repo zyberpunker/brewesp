@@ -1,27 +1,33 @@
-# Firmware
+# Firmware v2
 
-Planned home for the ESP32 controller firmware.
+Fresh ESP32 firmware rewrite for `0.2.0-dev`.
 
-Intended stack:
+This tree is intentionally separate from the legacy firmware so the new control
+path can be rebuilt from the repository documentation without inheriting old
+implementation problems.
 
-- PlatformIO
-- Arduino framework for ESP32
-- DS18B20 temperature probes
-- MQTT over Wi-Fi
-- NVS for persisted config/state
+Current scope in this rewrite:
 
-The first implementation target is:
+- local `system_config` persisted in NVS
+- recovery AP with onboarding page for Wi-Fi and MQTT bootstrap
+- cached `fermentation_config` and profile runtime persisted in NVS
+- DS18B20 beer/chamber probe handling on a shared OneWire bus
+- thermostat and profile control with heating/cooling hysteresis, delays, and fault shutdown
+- pluggable output drivers for `gpio`, `shelly_http_rpc`, and `kasa_local`
+- MQTT availability, heartbeat, state, telemetry, config apply, command, and alert handling
+- OTA check and install flow
+- optional local UI manager scaffold for future panel or headless operation
 
-- read sensors
-- apply thermostat logic
-- publish telemetry/state to MQTT
-- consume retained config JSON from MQTT
+Current transport limits in `firmware_v2`:
 
-Current scaffold now includes:
+- MQTT uses plain TCP only for now; `mqtt.tls=true` is rejected
+- Shelly output uses HTTP RPC only for now; `https=true` is rejected
 
-- PlatformIO Arduino project setup
-- `OutputDriver` abstraction
-- `gpio` output driver
-- `shelly_http_rpc` output driver stub
-- `kasa_local` output driver stub
-- optional `local_ui` manager for headless or panel-based operation
+Initial build commands:
+
+```powershell
+cd C:\Users\ola\git\brewesp\firmware_v2
+pio run
+pio run -t upload --upload-port COM4
+pio device monitor --port COM4 --baud 115200
+```

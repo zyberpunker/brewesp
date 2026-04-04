@@ -505,17 +505,27 @@ def _upsert_assignment(session, device: Device, role: str, relay: DiscoveredRela
     existing.alias = relay.alias
 
 
+def _default_port_for_driver(driver: str) -> int:
+    if driver == "shelly_http_rpc":
+        return 80
+    return 9999
+
+
 def _resolve_routing_relay(
     session,
     device: Device,
     *,
     host: str,
+    driver: str,
     alias: str = "",
 ) -> DiscoveredRelay | None:
     normalized_host = host.strip()
+    normalized_driver = driver.strip()
     normalized_alias = alias.strip() or None
     if not normalized_host:
         return None
+    if normalized_driver not in {"kasa_local", "shelly_http_rpc"}:
+        normalized_driver = "kasa_local"
 
     relay = session.scalar(select(DiscoveredRelay).where(DiscoveredRelay.host == normalized_host))
     if relay is None:
@@ -523,13 +533,17 @@ def _resolve_routing_relay(
             source_device_id=device.id,
             host=normalized_host,
             alias=normalized_alias,
-            driver="kasa_local",
-            port=9999,
+            driver=normalized_driver,
+            port=_default_port_for_driver(normalized_driver),
         )
         session.add(relay)
         return relay
 
     relay.source_device_id = relay.source_device_id or device.id
+    previous_driver = relay.driver
+    relay.driver = normalized_driver
+    if previous_driver != normalized_driver or not relay.port:
+        relay.port = _default_port_for_driver(normalized_driver)
     if normalized_alias:
         relay.alias = normalized_alias
     return relay
@@ -715,12 +729,14 @@ async def update_output_routing(request: Request, device_id: str):
             session,
             device,
             host=str(heating.get("host", "")),
+            driver=str(heating.get("driver", "")),
             alias=str(heating.get("alias", "")),
         )
         cooling_relay = _resolve_routing_relay(
             session,
             device,
             host=str(cooling.get("host", "")),
+            driver=str(cooling.get("driver", "")),
             alias=str(cooling.get("alias", "")),
         )
 

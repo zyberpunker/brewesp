@@ -104,9 +104,11 @@ type FermentationSetupDraft = {
 };
 
 type OutputRoutingDraft = {
+  heating_driver: string;
   heating_selected_host: string;
   heating_manual_host: string;
   heating_alias: string;
+  cooling_driver: string;
   cooling_selected_host: string;
   cooling_manual_host: string;
   cooling_alias: string;
@@ -184,9 +186,11 @@ function buildOutputRoutingDraft(
   const coolingHost = routing.cooling.host ?? "";
 
   return {
+    heating_driver: routing.heating.driver || "kasa_local",
     heating_selected_host: relayHosts.has(heatingHost) ? heatingHost : "",
     heating_manual_host: relayHosts.has(heatingHost) ? "" : heatingHost,
     heating_alias: routing.heating.alias ?? "",
+    cooling_driver: routing.cooling.driver || "kasa_local",
     cooling_selected_host: relayHosts.has(coolingHost) ? coolingHost : "",
     cooling_manual_host: relayHosts.has(coolingHost) ? "" : coolingHost,
     cooling_alias: routing.cooling.alias ?? "",
@@ -516,10 +520,12 @@ export function DeviceDetailApp({
 
       return updateOutputRouting(deviceId, {
         heating: {
+          driver: draft.heating_driver,
           host: heatingHost,
           alias: draft.heating_alias.trim(),
         },
         cooling: {
+          driver: draft.cooling_driver,
           host: coolingHost,
           alias: draft.cooling_alias.trim(),
         },
@@ -1673,16 +1679,35 @@ export function DeviceDetailApp({
                         Heating output
                       </p>
                       <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
+                        Driver
+                        <select
+                          className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+                          value={routingDraft.heating_driver}
+                          onChange={(event) =>
+                            updateRoutingField("heating_driver", event.target.value)
+                          }
+                        >
+                          <option value="kasa_local">Kasa local</option>
+                          <option value="shelly_http_rpc">Shelly HTTP RPC</option>
+                        </select>
+                      </label>
+                      <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
                         Discovered relay
                         <select
                           className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
                           value={routingDraft.heating_selected_host}
                           onChange={(event) => {
+                            const selectedRelay = (
+                              outputRoutingQuery.data?.discovered_relays ?? []
+                            ).find((relay) => relay.host === event.target.value);
                             updateRoutingField(
                               "heating_selected_host",
                               event.target.value,
                             );
                             updateRoutingField("heating_manual_host", "");
+                            if (selectedRelay) {
+                              updateRoutingField("heating_driver", selectedRelay.driver);
+                            }
                           }}
                         >
                           <option value="">None</option>
@@ -1731,16 +1756,35 @@ export function DeviceDetailApp({
                         Cooling output
                       </p>
                       <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
+                        Driver
+                        <select
+                          className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+                          value={routingDraft.cooling_driver}
+                          onChange={(event) =>
+                            updateRoutingField("cooling_driver", event.target.value)
+                          }
+                        >
+                          <option value="kasa_local">Kasa local</option>
+                          <option value="shelly_http_rpc">Shelly HTTP RPC</option>
+                        </select>
+                      </label>
+                      <label className="grid gap-2 text-sm font-semibold text-[var(--ink)]">
                         Discovered relay
                         <select
                           className="min-h-11 rounded-[18px] border border-black/8 bg-white/80 px-4 text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
                           value={routingDraft.cooling_selected_host}
                           onChange={(event) => {
+                            const selectedRelay = (
+                              outputRoutingQuery.data?.discovered_relays ?? []
+                            ).find((relay) => relay.host === event.target.value);
                             updateRoutingField(
                               "cooling_selected_host",
                               event.target.value,
                             );
                             updateRoutingField("cooling_manual_host", "");
+                            if (selectedRelay) {
+                              updateRoutingField("cooling_driver", selectedRelay.driver);
+                            }
                           }}
                         >
                           <option value="">None</option>
