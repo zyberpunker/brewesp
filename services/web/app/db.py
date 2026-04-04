@@ -52,6 +52,28 @@ def _apply_bootstrap_migrations() -> None:
         ):
             connection.execute(text(statement))
 
+        profiles_exists = connection.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_name = 'fermentation_profiles'
+                )
+                """
+            )
+        ).scalar_one()
+        if not profiles_exists:
+            return
+
+        connection.execute(
+            text("ALTER TABLE fermentation_profiles ALTER COLUMN source SET DEFAULT 'user'")
+        )
+        connection.execute(
+            text("UPDATE fermentation_profiles SET source = 'user' WHERE source = 'manual'")
+        )
+
 
 def _prepare_hypertable(table_name: str) -> None:
     with engine.begin() as connection:

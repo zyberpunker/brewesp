@@ -105,6 +105,19 @@ function formatProfileTimestamp(value: string | null) {
   return new Date(value).toLocaleString();
 }
 
+function sourceLabel(source: string) {
+  if (source === "manual" || source === "user") {
+    return "User";
+  }
+  if (source === "beerxml") {
+    return "BeerXML";
+  }
+  if (source === "builtin") {
+    return "Built-in";
+  }
+  return source;
+}
+
 function buildStepDraft(step: ProfileStep): StepDraft {
   const hold = durationUnitFromSeconds(step.hold_duration_s);
   const rampSeconds = step.ramp?.duration_s ?? 0;
@@ -534,8 +547,8 @@ export function ProfilesApp() {
                   Fermentation profiles
                 </h1>
                 <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                  Built-in, imported and manual profiles live here. Apply them from
-                  the device page when a controller should use one.
+                  Built-in, imported and user-created profiles live here. Apply
+                  them from the device page when a controller should use one.
                 </p>
               </div>
               <label className="relative block w-full">
@@ -571,7 +584,9 @@ export function ProfilesApp() {
                         <strong className="block text-base font-bold">{profile.name}</strong>
                         <p className="mt-1 text-sm text-[var(--muted)]">{profile.slug}</p>
                       </div>
-                      <Badge tone={sourceTone(profile.source)}>{profile.source}</Badge>
+                      <Badge tone={sourceTone(profile.source)}>
+                        {sourceLabel(profile.source)}
+                      </Badge>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
                       <span>{profile.step_count} steps</span>
@@ -648,7 +663,9 @@ export function ProfilesApp() {
                         Source
                       </p>
                       <strong className="mt-2 block text-2xl font-bold capitalize">
-                        {isCreatingNew ? "manual" : selectedSummary?.source ?? "manual"}
+                        {sourceLabel(
+                          isCreatingNew ? "user" : selectedSummary?.source ?? "user",
+                        )}
                       </strong>
                     </div>
                   </div>
