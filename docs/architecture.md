@@ -154,8 +154,11 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 - `dashboard.html` provides the fleet overview page
 - `device_detail.html` boots a bundled React app for device-specific controls and
   charts
-- the web service exposes API routes for fermentation-plan editing, output
-  routing, manual output commands, and profile commands
+- `profiles.html` boots a bundled React profile manager for reusable
+  fermentation templates and BeerXML import
+- the web service exposes API routes for fermentation-plan editing, profile
+  library CRUD/import, output routing, manual output commands, and profile
+  commands
 - Kasa discovery results are ingested over MQTT and shown back in the device
   routing workflow
 - the same service hosts the OTA manifest and firmware binary download

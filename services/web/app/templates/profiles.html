@@ -13,12 +13,9 @@
       window.process.env = window.process.env || {};
       window.process.env.NODE_ENV = window.process.env.NODE_ENV || "production";
     </script>
-    <script>
-      window.__BREWESP_DEVICE_DETAIL__ = {{ bootstrap | tojson }};
-    </script>
-    <script type="module" src="{{ url_for('static', path='react/device-detail.js') }}?v=20260401-no-legacy"></script>
+    <script type="module" src="{{ url_for('static', path='react/profiles.js') }}?v=20260404-profile-manager"></script>
   </head>
   <body>
-    <div id="device-detail-root"></div>
+    <div id="profiles-root"></div>
   </body>
 </html>

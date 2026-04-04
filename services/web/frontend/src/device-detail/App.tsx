@@ -36,6 +36,8 @@ import {
   updateFermentationPlan,
 } from "@/device-detail/api";
 import { TemperatureChart } from "@/device-detail/TemperatureChart";
+import { fetchProfileDetail, fetchProfiles } from "@/profiles/api";
+import type { ProfileDetail, ProfileSummary } from "@/profiles/types";
 import type {
   DeviceDetailBootstrap,
   OutputRoutingPayload,
@@ -57,6 +59,19 @@ function formatRuntimePhase(phase: string | null | undefined) {
   }
 
   return phase.replaceAll("_", " ");
+}
+
+function formatDurationCompact(totalSeconds: number | undefined) {
+  if (typeof totalSeconds !== "number" || Number.isNaN(totalSeconds)) {
+    return "n/a";
+  }
+  if (totalSeconds % 86400 === 0) {
+    return `${totalSeconds / 86400} d`;
+  }
+  if (totalSeconds % 3600 === 0) {
+    return `${totalSeconds / 3600} h`;
+  }
+  return `${Math.round(totalSeconds / 60)} min`;
 }
 
 function toneFromStatus(status: string) {
@@ -330,6 +345,11 @@ export function DeviceDetailApp({
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [isFermentationSetupOpen, setIsFermentationSetupOpen] = useState(false);
+  const [isProfileChooserOpen, setIsProfileChooserOpen] = useState(false);
+  const [selectedLibraryProfileSlug, setSelectedLibraryProfileSlug] = useState<string | null>(
+    null,
+  );
+  const [profileChooserError, setProfileChooserError] = useState<string | null>(null);
   const [fermentationSetupDraft, setFermentationSetupDraft] =
     useState<FermentationSetupDraft | null>(null);
   const [fermentationSetupError, setFermentationSetupError] = useState<string | null>(
@@ -366,11 +386,23 @@ export function DeviceDetailApp({
     enabled: isRoutingOpen,
     refetchInterval: isRoutingOpen ? 5000 : false,
   });
+  const profileLibraryQuery = useQuery({
+    queryKey: ["fermentation-profiles"],
+    queryFn: fetchProfiles,
+    enabled: isProfileChooserOpen,
+  });
+  const selectedLibraryProfileQuery = useQuery({
+    queryKey: ["fermentation-profile", selectedLibraryProfileSlug],
+    queryFn: () => fetchProfileDetail(selectedLibraryProfileSlug ?? ""),
+    enabled: isProfileChooserOpen && Boolean(selectedLibraryProfileSlug),
+  });
 
   const live = liveQuery.data;
   const telemetry = telemetryQuery.data ?? [];
   const fermentationPlan = fermentationPlanQuery.data;
   const retainedTarget = fermentationPlan?.thermostat?.setpoint_c;
+  const libraryProfiles = profileLibraryQuery.data ?? [];
+  const selectedLibraryProfile = selectedLibraryProfileQuery.data;
 
   useEffect(() => {
     if (!isDraftTargetDirty) {
@@ -409,6 +441,22 @@ export function DeviceDetailApp({
       setRoutingDraft(buildOutputRoutingDraft(outputRoutingQuery.data));
     }
   }, [isRoutingDirty, isRoutingOpen, outputRoutingQuery.data]);
+
+  useEffect(() => {
+    if (
+      !isProfileChooserOpen ||
+      !libraryProfiles.length
+    ) {
+      return;
+    }
+    if (!selectedLibraryProfileSlug) {
+      setSelectedLibraryProfileSlug(libraryProfiles[0].slug);
+      return;
+    }
+    if (!libraryProfiles.some((profile) => profile.slug === selectedLibraryProfileSlug)) {
+      setSelectedLibraryProfileSlug(libraryProfiles[0].slug);
+    }
+  }, [isProfileChooserOpen, libraryProfiles, selectedLibraryProfileSlug]);
 
   const refreshQueries = async () => {
     await Promise.all([
@@ -511,6 +559,19 @@ export function DeviceDetailApp({
     },
     onSettled: refreshQueries,
   });
+  const applyLibraryProfileMutation = useMutation({
+    mutationFn: async (profile: ProfileDetail) => {
+      const current = await fetchFermentationPlan(deviceId);
+      const nextPlan: FermentationPlan = {
+        ...current,
+        version: (current.version ?? 0) + 1,
+        mode: "profile",
+        profile: profile.device_profile,
+      };
+      return updateFermentationPlan(deviceId, nextPlan);
+    },
+    onSettled: refreshQueries,
+  });
   const outputRoutingMutation = useMutation({
     mutationFn: (draft: OutputRoutingDraft) => {
       const heatingHost =
@@ -561,6 +622,7 @@ export function DeviceDetailApp({
   const isConfirmPending =
     outputMutation.isPending || profileMutation.isPending || targetMutation.isPending;
   const isFermentationSetupPending = fermentationSetupMutation.isPending;
+  const isProfileChooserPending = applyLibraryProfileMutation.isPending;
   const isSettingsPending = settingsMutation.isPending;
   const isRoutingPending =
     outputRoutingMutation.isPending || scanRelaysMutation.isPending;
@@ -576,6 +638,7 @@ export function DeviceDetailApp({
       !isDiagnosticsOpen &&
       !isSettingsOpen &&
       !isFermentationSetupOpen &&
+      !isProfileChooserOpen &&
       !isRoutingOpen
     ) {
       return;
@@ -599,6 +662,11 @@ export function DeviceDetailApp({
         setFermentationSetupError(null);
       }
 
+      if (isProfileChooserOpen && !isProfileChooserPending) {
+        setIsProfileChooserOpen(false);
+        setProfileChooserError(null);
+      }
+
       if (isSettingsOpen && !isSettingsPending) {
         setIsSettingsOpen(false);
         setSettingsError(null);
@@ -618,6 +686,8 @@ export function DeviceDetailApp({
     isDiagnosticsOpen,
     isFermentationSetupOpen,
     isFermentationSetupPending,
+    isProfileChooserOpen,
+    isProfileChooserPending,
     isRoutingOpen,
     isRoutingPending,
     isSettingsOpen,
@@ -693,6 +763,14 @@ export function DeviceDetailApp({
     });
   };
 
+  const openProfileChooser = () => {
+    startTransition(() => {
+      setSelectedLibraryProfileSlug(fermentationPlan?.profile?.id ?? null);
+      setProfileChooserError(null);
+      setIsProfileChooserOpen(true);
+    });
+  };
+
   const saveFermentationSetup = () => {
     if (!fermentationSetupDraft) {
       return;
@@ -713,6 +791,25 @@ export function DeviceDetailApp({
           error instanceof Error
             ? error.message
             : "Failed to save fermentation setup.",
+        );
+      },
+    });
+  };
+
+  const applySelectedLibraryProfile = () => {
+    if (!selectedLibraryProfile) {
+      return;
+    }
+    setProfileChooserError(null);
+    applyLibraryProfileMutation.mutate(selectedLibraryProfile, {
+      onSuccess: () => {
+        setIsProfileChooserOpen(false);
+      },
+      onError: (error) => {
+        setProfileChooserError(
+          error instanceof Error
+            ? error.message
+            : "Failed to apply the selected profile.",
         );
       },
     });
@@ -845,6 +942,13 @@ export function DeviceDetailApp({
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="subtle" onClick={() => setIsDiagnosticsOpen(true)}>
               Diagnostics
+            </Button>
+            <Button
+              variant="subtle"
+              onClick={openProfileChooser}
+              disabled={fermentationPlanQuery.isLoading}
+            >
+              Choose profile
             </Button>
             <Button
               variant="subtle"
@@ -1476,6 +1580,221 @@ export function DeviceDetailApp({
                     {lastPayload}
                   </pre>
                 </section>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isProfileChooserOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1f272466] px-4 py-6 backdrop-blur-sm">
+            <button
+              type="button"
+              aria-label="Close profile chooser"
+              className="absolute inset-0"
+              onClick={() => {
+                if (!isProfileChooserPending) {
+                  setIsProfileChooserOpen(false);
+                  setProfileChooserError(null);
+                }
+              }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="profile-chooser-title"
+              className="relative flex max-h-[min(90vh,920px)] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-black/8 bg-[var(--surface)] shadow-[0_24px_70px_rgba(26,34,31,0.2)]"
+            >
+              <div className="border-b border-black/8 px-6 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--accent)]">
+                      Profile library
+                    </p>
+                    <h2
+                      id="profile-chooser-title"
+                      className="mt-2 text-2xl font-bold tracking-[-0.04em]"
+                    >
+                      Choose profile for {deviceId}
+                    </h2>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                      Applying a library profile copies its steps into this device's
+                      retained fermentation plan and switches the mode to profile.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <a
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white/80 px-4 text-sm font-semibold text-[var(--ink)] ring-1 ring-black/8 transition hover:bg-white"
+                      href="/profiles"
+                    >
+                      Open profile manager
+                    </a>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setIsProfileChooserOpen(false);
+                        setProfileChooserError(null);
+                      }}
+                      disabled={isProfileChooserPending}
+                    >
+                      Close
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-6 overflow-y-auto px-6 py-6 xl:grid-cols-[320px_1fr]">
+                <div className="grid gap-3">
+                  {profileLibraryQuery.isLoading ? (
+                    <div className="rounded-[22px] bg-[var(--surface-strong)] p-4 text-sm text-[var(--muted)]">
+                      Loading profiles...
+                    </div>
+                  ) : libraryProfiles.length ? (
+                    libraryProfiles.map((profile) => (
+                      <button
+                        key={profile.slug}
+                        type="button"
+                        className={`grid gap-2 rounded-[22px] border px-4 py-4 text-left transition ${
+                          profile.slug === selectedLibraryProfileSlug
+                            ? "border-[var(--accent)] bg-[color:color-mix(in_srgb,var(--accent)_8%,white)]"
+                            : "border-black/8 bg-white/72 hover:bg-white"
+                        }`}
+                        onClick={() => setSelectedLibraryProfileSlug(profile.slug)}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <strong className="text-base font-bold">{profile.name}</strong>
+                          <Badge
+                            tone={
+                              profile.source === "builtin"
+                                ? "online"
+                                : profile.source === "beerxml"
+                                  ? "cooling"
+                                  : "neutral"
+                            }
+                          >
+                            {profile.source}
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-[var(--muted)]">{profile.slug}</p>
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
+                          {profile.step_count} steps · {formatDurationCompact(profile.total_duration_s)}
+                        </p>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="rounded-[22px] bg-[var(--surface-strong)] p-4 text-sm leading-6 text-[var(--muted)]">
+                      No reusable profiles are stored yet.
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-4">
+                  {selectedLibraryProfileQuery.isLoading ? (
+                    <div className="rounded-[24px] bg-[var(--surface-strong)] p-6 text-sm text-[var(--muted)]">
+                      Loading selected profile...
+                    </div>
+                  ) : selectedLibraryProfile ? (
+                    <>
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <div className="rounded-[22px] bg-[var(--surface-strong)] p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                            Name
+                          </p>
+                          <strong className="mt-2 block text-xl font-bold">
+                            {selectedLibraryProfile.name}
+                          </strong>
+                        </div>
+                        <div className="rounded-[22px] bg-[var(--surface-strong)] p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                            Steps
+                          </p>
+                          <strong className="mt-2 block text-xl font-bold">
+                            {selectedLibraryProfile.steps.length}
+                          </strong>
+                        </div>
+                        <div className="rounded-[22px] bg-[var(--surface-strong)] p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                            Source
+                          </p>
+                          <strong className="mt-2 block text-xl font-bold capitalize">
+                            {selectedLibraryProfile.source}
+                          </strong>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4">
+                        {selectedLibraryProfile.steps.map((step, index) => (
+                          <div
+                            key={step.id}
+                            className="rounded-[22px] border border-black/8 bg-white/72 p-4"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--accent)]">
+                                  Step {index + 1}
+                                </p>
+                                <strong className="mt-2 block text-lg font-bold">
+                                  {step.label}
+                                </strong>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Badge tone="neutral">
+                                  {formatTemperature(step.target_c)}
+                                </Badge>
+                                <Badge tone="neutral">
+                                  {formatDurationCompact(step.hold_duration_s)}
+                                </Badge>
+                                {step.ramp ? (
+                                  <Badge tone="neutral">
+                                    Ramp {formatDurationCompact(step.ramp.duration_s)}
+                                  </Badge>
+                                ) : null}
+                              </div>
+                            </div>
+                            <p className="mt-3 text-sm text-[var(--muted)]">
+                              Advance:{" "}
+                              <strong className="text-[var(--ink)]">
+                                {step.advance_policy === "manual_release"
+                                  ? "manual release"
+                                  : "auto"}
+                              </strong>
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-[24px] bg-[var(--surface-strong)] p-6 text-sm leading-6 text-[var(--muted)]">
+                      Pick a profile from the library to preview it here before applying.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="border-t border-black/8 px-6 py-4">
+                {profileChooserError ? (
+                  <p className="mb-3 rounded-[18px] bg-[color:color-mix(in_srgb,var(--fault)_10%,white)] px-4 py-3 text-sm text-[var(--fault)]">
+                    {profileChooserError}
+                  </p>
+                ) : null}
+                <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setIsProfileChooserOpen(false);
+                      setProfileChooserError(null);
+                    }}
+                    disabled={isProfileChooserPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={applySelectedLibraryProfile}
+                    disabled={!selectedLibraryProfile || isProfileChooserPending}
+                  >
+                    Apply to device
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

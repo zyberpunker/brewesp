@@ -15,13 +15,23 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: "dist/react",
+    outDir: "../app/static/react",
     emptyOutDir: true,
-    lib: {
-      entry: path.resolve(__dirname, "src/device-detail/main.tsx"),
-      formats: ["es"],
-      fileName: () => "device-detail.js",
-      cssFileName: "device-detail",
+    rollupOptions: {
+      input: {
+        "device-detail": path.resolve(__dirname, "src/device-detail/main.tsx"),
+        profiles: path.resolve(__dirname, "src/profiles/main.tsx"),
+      },
+      output: {
+        entryFileNames: "[name].js",
+        chunkFileNames: "chunks/[name]-[hash].js",
+        assetFileNames: (assetInfo) => {
+          if (assetInfo.name?.endsWith(".css")) {
+            return "[name][extname]";
+          }
+          return "assets/[name]-[hash][extname]";
+        },
+      },
     },
   },
 });

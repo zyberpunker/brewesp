@@ -6,6 +6,8 @@ Responsibilities:
 
 - settings UI
 - profile editor
+- reusable fermentation profile library
+- BeerXML profile import
 - device dashboard
 - telemetry/history storage
 - publish config JSON to MQTT
