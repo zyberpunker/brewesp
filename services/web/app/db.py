@@ -48,6 +48,7 @@ def _apply_bootstrap_migrations() -> None:
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS control_sensor VARCHAR(24) DEFAULT 'primary'",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS deviation_c DOUBLE PRECISION DEFAULT 2.0",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS sensor_stale_s INTEGER DEFAULT 30",
+            "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS manual_output VARCHAR(24) DEFAULT 'off'",
             "ALTER TABLE device_fermentation_configs ADD COLUMN IF NOT EXISTS profile_plan JSONB",
         ):
             connection.execute(text(statement))

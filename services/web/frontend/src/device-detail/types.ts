@@ -12,6 +12,7 @@ export type TelemetryPoint = {
 };
 
 export type TelemetryWindow = "2h" | "12h" | "2d" | "all";
+export type ManualOutputState = "off" | "heating" | "cooling";
 
 export type OutputAssignment = {
   driver: string;
@@ -97,7 +98,7 @@ export type FermentationPlan = {
   version: number;
   device_id: string;
   name: string;
-  mode: "thermostat" | "profile";
+  mode: "thermostat" | "profile" | "manual";
   thermostat: {
     setpoint_c: number;
     hysteresis_c: number;
@@ -114,6 +115,9 @@ export type FermentationPlan = {
   alarms: {
     deviation_c: number;
     sensor_stale_s: number;
+  };
+  manual?: {
+    output: ManualOutputState;
   };
   profile?: {
     id: string;

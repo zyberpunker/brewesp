@@ -511,6 +511,9 @@ Wire-unit rule:
 - `hold_duration_s` and `ramp_duration_s` are always integer seconds
 - editors may use friendlier display units, but serialization must stay
   unambiguous on the wire
+- when `mode == "manual"`, the payload must include a `manual` block with
+  `output: "off" | "heating" | "cooling"`
+- when `mode == "profile"`, the payload must include a `profile` block
 
 Current implementation note:
 
@@ -572,7 +575,10 @@ when both are present.
 
 Current implementation notes:
 
-- `set_output` is used by the web UI for manual heating/cooling commands
+- the web UI persists manual heat/off/cool intent through the retained
+  fermentation config rather than relying on momentary `set_output`
+- `set_output` remains a compatibility command and is treated as a manual-mode
+  operator action when the controller is already in `manual`
 - `discover_kasa` asks the device to scan the local subnet and publish results
   on `discovery/kasa`
 - `ack_alert` acknowledges an active alert for operator workflow only; it must

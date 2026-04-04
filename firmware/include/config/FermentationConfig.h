@@ -19,6 +19,10 @@ struct SensorControlConfig {
     String controlSensor = "primary";
 };
 
+struct ManualModeConfig {
+    String output = "off";
+};
+
 struct ProfileStepConfig {
     String id;
     String label;
@@ -58,5 +62,6 @@ struct FermentationConfig {
     String mode = "thermostat";
     ThermostatConfig thermostat;
     SensorControlConfig sensors;
+    ManualModeConfig manual;
     ProfileConfig profile;
 };

@@ -101,6 +101,7 @@ class DeviceFermentationConfig(Base):
     control_sensor: Mapped[str] = mapped_column(String(24), default="primary")
     deviation_c: Mapped[float] = mapped_column(Float, default=2.0)
     sensor_stale_s: Mapped[int] = mapped_column(Integer, default=30)
+    manual_output: Mapped[str] = mapped_column(String(24), default="off")
     profile_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_applied_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_applied_result: Mapped[str | None] = mapped_column(String(24), nullable=True)

@@ -212,6 +212,10 @@ bool ConfigStore::loadFermentationConfig(FermentationConfig& config) {
         prefs.getFloat("fcfg_s2hy", config.sensors.secondaryLimitHysteresisC);
     config.sensors.controlSensor =
         prefs.getString("fcfg_ctrl", config.sensors.controlSensor);
+    config.manual.output = prefs.getString("fcfg_mout", config.manual.output);
+    if (config.manual.output != "heating" && config.manual.output != "cooling") {
+        config.manual.output = "off";
+    }
 
     if (prefs.isKey("fcfg_prof")) {
         const String profileJson = prefs.getString("fcfg_prof", "");
@@ -262,6 +266,7 @@ bool ConfigStore::saveFermentationConfig(const FermentationConfig& config) {
     prefs.putFloat("fcfg_s2off", config.sensors.secondaryOffsetC);
     prefs.putFloat("fcfg_s2hy", config.sensors.secondaryLimitHysteresisC);
     prefs.putString("fcfg_ctrl", config.sensors.controlSensor);
+    prefs.putString("fcfg_mout", config.manual.output);
 
     DynamicJsonDocument doc(4096);
     doc["id"] = config.profile.id;

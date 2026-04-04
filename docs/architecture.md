@@ -157,14 +157,13 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 - `profiles.html` boots a bundled React profile manager for reusable
   fermentation templates and BeerXML import
 - the web service exposes API routes for fermentation-plan editing, profile
-  library CRUD/import, output routing, manual output commands, and profile
+  library CRUD/import, output routing, manual mode selection, and profile
   commands
 - Kasa discovery results are ingested over MQTT and shown back in the device
   routing workflow
 - the same service hosts the OTA manifest and firmware binary download
-- the device detail UI now disables manual output controls while automatic
-  thermostat/profile control is active, because a persistent operator-owned
-  output mode does not exist yet
+- the device detail UI exposes persistent heat/off/cool controls only while the
+  retained fermentation plan is in `manual` mode
 
 ## Docker deployment shape
 
@@ -419,13 +418,13 @@ Frequently changed process data:
 This should be distributed over MQTT from the web service and cached locally in
 NVS by the ESP32.
 
-Planned run modes:
+Run modes:
 
 - `thermostat`
 - `profile`
 - `manual`
 
-### Planned `manual` mode behavior
+### `manual` mode behavior
 
 `manual` should be a first-class run mode, not just a momentary output command.
 
@@ -463,8 +462,8 @@ Operator workflow expectations:
 
 Configuration expectations:
 
-- `fermentation_config.mode` should eventually allow `manual` in addition to
-  `thermostat` and `profile`
+- `fermentation_config.mode` allows `manual` in addition to `thermostat` and
+  `profile`
 - the retained config should carry enough state for the controller to restore
   manual intent after reboot, but it should not restore an unsafe active output
   blindly without re-checking safety conditions

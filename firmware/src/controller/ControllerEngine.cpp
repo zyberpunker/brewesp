@@ -18,15 +18,24 @@ bool ControllerEngine::update(const FermentationConfig& config, const Inputs& in
     status_.heatingDemand = false;
     status_.coolingDemand = false;
 
-    if (config.mode != "thermostat" && config.mode != "profile") {
-        const bool outputsChanged = forceOutputsOff(outputs);
-        return setState(State::Idle, "mode inactive") || outputsChanged;
-    }
-
     if (!inputs.hasPrimaryTemp) {
         const bool outputsChanged = forceOutputsOff(outputs);
         const String reason = inputs.faultReason.isEmpty() ? "primary sensor invalid" : inputs.faultReason;
         return setState(State::Fault, reason) || outputsChanged;
+    }
+
+    if (config.mode == "manual") {
+        if (config.manual.output == "heating") {
+            return requestHeating(config, inputs, outputs, State::ManualHeating, "manual heating", "manual heating delay");
+        }
+        if (config.manual.output == "cooling") {
+            return requestCooling(config, inputs, outputs, State::ManualCooling, "manual cooling", "manual cooling delay");
+        }
+        return requestOff(config, outputs, inputs, State::ManualOff, "manual off");
+    }
+
+    if (config.mode != "thermostat" && config.mode != "profile") {
+        return requestOff(config, outputs, inputs, State::Idle, "mode inactive");
     }
 
     status_.automaticControlActive = true;
@@ -56,53 +65,14 @@ bool ControllerEngine::update(const FermentationConfig& config, const Inputs& in
     }
 
     if (status_.heatingDemand) {
-        const uint32_t remaining = remainingSeconds(heatingLockedUntilMs_, inputs.nowMs);
-        if (remaining > 0) {
-            return setState(State::LockedHeating, ("heating delay " + String(remaining) + "s").c_str());
-        }
-
-        const bool changed = outputs.setHeating(OutputState::On);
-        outputs.setCooling(OutputState::Off);
-        const bool stateChanged = setState(State::Heating, "heating");
-        if (changed) {
-            coolingLockedUntilMs_ =
-                inputs.nowMs + static_cast<uint32_t>(config.thermostat.coolingDelaySeconds) * kMsPerSecond;
-        }
-        return stateChanged || changed;
+        return requestHeating(config, inputs, outputs, State::Heating, "heating", "heating delay");
     }
 
     if (status_.coolingDemand) {
-        const uint32_t remaining = remainingSeconds(coolingLockedUntilMs_, inputs.nowMs);
-        if (remaining > 0) {
-            return setState(State::LockedCooling, ("cooling delay " + String(remaining) + "s").c_str());
-        }
-
-        const bool changed = outputs.setCooling(OutputState::On);
-        outputs.setHeating(OutputState::Off);
-        const bool stateChanged = setState(State::Cooling, "cooling");
-        if (changed) {
-            heatingLockedUntilMs_ =
-                inputs.nowMs + static_cast<uint32_t>(config.thermostat.heatingDelaySeconds) * kMsPerSecond;
-        }
-        return stateChanged || changed;
+        return requestCooling(config, inputs, outputs, State::Cooling, "cooling", "cooling delay");
     }
 
-    const bool heatingWasOn = outputs.heatingState() == OutputState::On;
-    const bool coolingWasOn = outputs.coolingState() == OutputState::On;
-    const bool heatingChanged = heatingWasOn ? outputs.setHeating(OutputState::Off) : false;
-    const bool coolingChanged = coolingWasOn ? outputs.setCooling(OutputState::Off) : false;
-
-    if (heatingChanged) {
-        coolingLockedUntilMs_ =
-            inputs.nowMs + static_cast<uint32_t>(config.thermostat.coolingDelaySeconds) * kMsPerSecond;
-    }
-    if (coolingChanged) {
-        heatingLockedUntilMs_ =
-            inputs.nowMs + static_cast<uint32_t>(config.thermostat.heatingDelaySeconds) * kMsPerSecond;
-    }
-
-    const bool stateChanged = setState(State::Idle, "within hysteresis");
-    return stateChanged || heatingChanged || coolingChanged;
+    return requestOff(config, outputs, inputs, State::Idle, "within hysteresis");
 }
 
 const ControllerEngine::Status& ControllerEngine::status() const {
@@ -127,6 +97,12 @@ const char* ControllerEngine::stateName(State state) {
             return "heating";
         case State::Cooling:
             return "cooling";
+        case State::ManualOff:
+            return "manual_off";
+        case State::ManualHeating:
+            return "manual_heating";
+        case State::ManualCooling:
+            return "manual_cooling";
         case State::LockedHeating:
             return "locked_heating";
         case State::LockedCooling:
@@ -179,4 +155,94 @@ void ControllerEngine::updateSecondaryLimits(const FermentationConfig& config, c
     } else if (inputs.secondaryTempC > (setpointC + hy2)) {
         heatingLimitedBySecondary_ = true;
     }
+}
+
+bool ControllerEngine::requestHeating(
+    const FermentationConfig& config,
+    const Inputs& inputs,
+    OutputManager& outputs,
+    State activeState,
+    const String& activeReason,
+    const String& lockedReason) {
+    const uint32_t remaining = remainingSeconds(heatingLockedUntilMs_, inputs.nowMs);
+    if (remaining > 0) {
+        bool changed = false;
+        if (outputs.coolingState() == OutputState::On) {
+            changed = outputs.setCooling(OutputState::Off);
+            const uint32_t nextLockUntil =
+                inputs.nowMs + static_cast<uint32_t>(config.thermostat.heatingDelaySeconds) * kMsPerSecond;
+            if (static_cast<int32_t>(nextLockUntil - heatingLockedUntilMs_) > 0) {
+                heatingLockedUntilMs_ = nextLockUntil;
+            }
+        }
+
+        const uint32_t refreshedRemaining = remainingSeconds(heatingLockedUntilMs_, inputs.nowMs);
+        return setState(State::LockedHeating, lockedReason + " " + String(refreshedRemaining) + "s") || changed;
+    }
+
+    const bool changed = outputs.setHeating(OutputState::On);
+    outputs.setCooling(OutputState::Off);
+    const bool stateChanged = setState(activeState, activeReason);
+    if (changed) {
+        coolingLockedUntilMs_ =
+            inputs.nowMs + static_cast<uint32_t>(config.thermostat.coolingDelaySeconds) * kMsPerSecond;
+    }
+    return stateChanged || changed;
+}
+
+bool ControllerEngine::requestCooling(
+    const FermentationConfig& config,
+    const Inputs& inputs,
+    OutputManager& outputs,
+    State activeState,
+    const String& activeReason,
+    const String& lockedReason) {
+    const uint32_t remaining = remainingSeconds(coolingLockedUntilMs_, inputs.nowMs);
+    if (remaining > 0) {
+        bool changed = false;
+        if (outputs.heatingState() == OutputState::On) {
+            changed = outputs.setHeating(OutputState::Off);
+            const uint32_t nextLockUntil =
+                inputs.nowMs + static_cast<uint32_t>(config.thermostat.coolingDelaySeconds) * kMsPerSecond;
+            if (static_cast<int32_t>(nextLockUntil - coolingLockedUntilMs_) > 0) {
+                coolingLockedUntilMs_ = nextLockUntil;
+            }
+        }
+
+        const uint32_t refreshedRemaining = remainingSeconds(coolingLockedUntilMs_, inputs.nowMs);
+        return setState(State::LockedCooling, lockedReason + " " + String(refreshedRemaining) + "s") || changed;
+    }
+
+    const bool changed = outputs.setCooling(OutputState::On);
+    outputs.setHeating(OutputState::Off);
+    const bool stateChanged = setState(activeState, activeReason);
+    if (changed) {
+        heatingLockedUntilMs_ =
+            inputs.nowMs + static_cast<uint32_t>(config.thermostat.heatingDelaySeconds) * kMsPerSecond;
+    }
+    return stateChanged || changed;
+}
+
+bool ControllerEngine::requestOff(
+    const FermentationConfig& config,
+    OutputManager& outputs,
+    const Inputs& inputs,
+    State state,
+    const String& reason) {
+    const bool heatingWasOn = outputs.heatingState() == OutputState::On;
+    const bool coolingWasOn = outputs.coolingState() == OutputState::On;
+    const bool heatingChanged = heatingWasOn ? outputs.setHeating(OutputState::Off) : false;
+    const bool coolingChanged = coolingWasOn ? outputs.setCooling(OutputState::Off) : false;
+
+    if (heatingChanged) {
+        coolingLockedUntilMs_ =
+            inputs.nowMs + static_cast<uint32_t>(config.thermostat.coolingDelaySeconds) * kMsPerSecond;
+    }
+    if (coolingChanged) {
+        heatingLockedUntilMs_ =
+            inputs.nowMs + static_cast<uint32_t>(config.thermostat.heatingDelaySeconds) * kMsPerSecond;
+    }
+
+    const bool stateChanged = setState(state, reason);
+    return stateChanged || heatingChanged || coolingChanged;
 }

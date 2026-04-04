@@ -21,6 +21,10 @@ String sensorFaultReason(const char* sensorName, const SensorManager::Reading& r
     }
     return String(sensorName) + " sensor invalid";
 }
+
+bool isManualOutputSelection(const String& value) {
+    return value == "off" || value == "heating" || value == "cooling";
+}
 }
 
 void App::begin() {
@@ -172,13 +176,24 @@ void App::handleFermentationConfig(const FermentationConfig& updatedConfig) {
     }
 
     fermentationConfig_ = updatedConfig;
+    if (!isManualOutputSelection(fermentationConfig_.manual.output)) {
+        fermentationConfig_.manual.output = "off";
+    }
     initializeProfileRuntime();
-    controller_.reset();
+    const uint32_t nowMs = millis();
     if (fermentationConfig_.mode == "profile") {
-        updateProfileRuntime(millis(), true);
-        persistProfileRuntime(millis(), true);
+        updateProfileRuntime(nowMs, true);
+        persistProfileRuntime(nowMs, true);
     } else {
         clearPersistedProfileRuntime();
+    }
+    if (isOtaLockoutActive()) {
+        outputs_.setHeating(OutputState::Off);
+        outputs_.setCooling(OutputState::Off);
+        outputs_.refreshStates();
+    } else {
+        controller_.update(fermentationConfig_, buildControllerInputs(), outputs_);
+        outputs_.refreshStates();
     }
     mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
     mqtt_.publishConfigApplied(
@@ -216,6 +231,35 @@ void App::handleOutputCommand(const String& target, OutputState state) {
             "[app] ignoring output command during OTA reboot pending target=%s state=%s\r\n",
             target.c_str(),
             state == OutputState::On ? "on" : "off");
+        return;
+    }
+
+    if (fermentationConfig_.mode == "manual") {
+        String nextManualOutput = fermentationConfig_.manual.output;
+        if (target == "heating") {
+            nextManualOutput = state == OutputState::On ? "heating" : "off";
+        } else if (target == "cooling") {
+            nextManualOutput = state == OutputState::On ? "cooling" : "off";
+        } else if (target == "all" && state == OutputState::Off) {
+            nextManualOutput = "off";
+        }
+
+        if (!isManualOutputSelection(nextManualOutput) || nextManualOutput == fermentationConfig_.manual.output) {
+            return;
+        }
+
+        fermentationConfigRollback_ = fermentationConfig_;
+        fermentationConfig_.manual.output = nextManualOutput;
+        fermentationConfig_.version += 1;
+        if (!configStore_.saveFermentationConfig(fermentationConfig_)) {
+            fermentationConfig_ = fermentationConfigRollback_;
+            return;
+        }
+
+        controller_.update(fermentationConfig_, currentInputs, outputs_);
+        outputs_.refreshStates();
+        mqtt_.publishState(config_, outputs_, localUi_, buildTelemetrySnapshot());
+        Serial.printf("[app] manual output intent updated=%s\r\n", fermentationConfig_.manual.output.c_str());
         return;
     }
 
@@ -486,6 +530,7 @@ FermentationConfig App::buildDefaultFermentationConfig(const String& deviceId) c
     config.deviceId = deviceId;
     config.name = "Default fermentation";
     config.mode = "thermostat";
+    config.manual.output = "off";
     config.thermostat.setpointC = kDefaultSetpointC;
     config.thermostat.hysteresisC = 0.3f;
     config.thermostat.coolingDelaySeconds = 300;

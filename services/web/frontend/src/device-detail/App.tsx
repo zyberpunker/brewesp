@@ -30,7 +30,6 @@ import {
   fetchOutputRouting,
   fetchTelemetry,
   scanKasaRelays,
-  sendOutputCommand,
   sendProfileCommand,
   updateOutputRouting,
   updateFermentationPlan,
@@ -42,6 +41,7 @@ import type {
   DeviceDetailBootstrap,
   OutputRoutingPayload,
   FermentationPlan,
+  ManualOutputState,
   TelemetryWindow,
 } from "@/device-detail/types";
 import { cn } from "@/lib/utils";
@@ -116,7 +116,7 @@ type DeviceSettingsDraft = {
 
 type FermentationSetupDraft = {
   name: string;
-  mode: "thermostat" | "profile";
+  mode: "thermostat" | "profile" | "manual";
   profile_slug: string;
 };
 
@@ -518,8 +518,16 @@ export function DeviceDetailApp({
   };
 
   const outputMutation = useMutation({
-    mutationFn: (action: Parameters<typeof sendOutputCommand>[1]) =>
-      sendOutputCommand(deviceId, action),
+    mutationFn: async (nextOutput: ManualOutputState) => {
+      const current = await fetchFermentationPlan(deviceId);
+      const nextPlan: FermentationPlan = {
+        ...current,
+        version: (current.version ?? 0) + 1,
+        mode: "manual",
+        manual: { output: nextOutput },
+      };
+      return updateFermentationPlan(deviceId, nextPlan);
+    },
     onSettled: refreshQueries,
   });
 
@@ -595,6 +603,13 @@ export function DeviceDetailApp({
         mode: draft.mode,
       };
 
+      if (draft.mode === "manual") {
+        nextPlan.manual =
+          current.mode === "manual" && current.manual
+            ? current.manual
+            : { output: "off" };
+      }
+
       if (draft.mode === "profile") {
         const nextProfileSlug = draft.profile_slug.trim();
         if (nextProfileSlug) {
@@ -657,6 +672,8 @@ export function DeviceDetailApp({
 
   const profileRuntime = live.profile_runtime;
   const canAdjustTarget = fermentationPlan?.mode === "thermostat";
+  const manualModeActive = fermentationPlan?.mode === "manual";
+  const manualOutputTarget = fermentationPlan?.manual?.output ?? "off";
   const profilePhase = formatRuntimePhase(profileRuntime?.phase);
   const activeTarget = clampTarget(draftTarget);
   const runtimeTone =
@@ -671,7 +688,9 @@ export function DeviceDetailApp({
     () => JSON.stringify(live.last_payload ?? {}, null, 2),
     [live.last_payload],
   );
-  const manualOutputControlsAvailable = !live.automatic_control_active;
+  const manualOutputControlsAvailable = manualModeActive;
+  const manualOutputCanDriveHeatOrCool =
+    manualModeActive && !live.fault && !outputMutation.isPending;
   const isConfirmPending =
     outputMutation.isPending || profileMutation.isPending || targetMutation.isPending;
   const isFermentationSetupPending = fermentationSetupMutation.isPending;
@@ -772,7 +791,7 @@ export function DeviceDetailApp({
           : confirmAction === "all_off"
             ? {
                 title: "Turn all outputs off?",
-                body: "This immediately sends an off command to both heating and cooling outputs. Confirm only if you intend to stop all output activity now.",
+                body: "This changes the retained manual output selection to off. Confirm only if you intend to stop manual heating or cooling now.",
                 confirmLabel: "All outputs off",
                 confirmTone: "danger" as const,
               }
@@ -798,7 +817,7 @@ export function DeviceDetailApp({
       return;
     }
     if (confirmAction === "all_off") {
-      outputMutation.mutate("all_off", {
+      outputMutation.mutate("off", {
         onSettled: () => setConfirmAction(null),
       });
     }
@@ -1160,7 +1179,7 @@ export function DeviceDetailApp({
                     ? "Loading the retained fermentation config."
                     : canAdjustTarget
                     ? "Updates the retained fermentation config target."
-                    : "Direct target edits are disabled while the retained plan is in profile mode."}
+                    : "Direct target edits are disabled while the retained plan is in manual or profile mode."}
                 </p>
                 <Button
                   className="mt-4 w-full"
@@ -1176,19 +1195,28 @@ export function DeviceDetailApp({
               <div className="grid gap-3">
                 {!manualOutputControlsAvailable ? (
                   <div className="rounded-[22px] border border-black/8 bg-[var(--surface-strong)] p-4 text-sm leading-6 text-[var(--muted)]">
-                    Automatic control is currently active in{" "}
-                    <strong className="text-[var(--ink)] capitalize">
-                      {live.last_mode ?? "runtime"}
-                    </strong>
-                    . Manual output commands are disabled because thermostat or
-                    profile control would immediately take the outputs back. A real
-                    <strong className="text-[var(--ink)]"> manual </strong>
-                    mode needs to exist before persistent heat/off/cool control makes
-                    sense here.
+                    Persistent output control is only available when the retained
+                    plan is in <strong className="text-[var(--ink)]">manual</strong>{" "}
+                    mode. Switch modes in Fermentation setup before choosing
+                    heating, off, or cooling.
+                  </div>
+                ) : live.fault ? (
+                  <div className="rounded-[22px] border border-[color:color-mix(in_srgb,var(--fault)_20%,black)] bg-[color:color-mix(in_srgb,var(--fault)_8%,white)] p-4 text-sm leading-6 text-[var(--fault)]">
+                    Manual mode is active, but heating and cooling are locked out
+                    while the controller has a safety fault. Set the retained
+                    manual state to off or clear the fault before driving output.
                   </div>
                 ) : null}
 
                 <div className={cn("grid gap-3", !manualOutputControlsAvailable && "opacity-55")}>
+                  {manualModeActive ? (
+                    <div className="rounded-[20px] bg-[var(--surface-strong)] px-4 py-3 text-sm text-[var(--muted)]">
+                      Manual intent:{" "}
+                      <strong className="text-[var(--ink)] capitalize">
+                        {manualOutputTarget}
+                      </strong>
+                    </div>
+                  ) : null}
                   <div className="grid gap-2">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-semibold text-[var(--ink)]">Heating</p>
@@ -1201,13 +1229,13 @@ export function DeviceDetailApp({
                         type="button"
                         className={cn(
                           "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
-                          live.heating_state === "on"
+                          manualOutputTarget === "heating"
                             ? "bg-[var(--heat)] text-white shadow-[0_10px_24px_rgba(212,106,58,0.2)]"
                             : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
                         )}
-                        aria-pressed={live.heating_state === "on"}
-                        onClick={() => outputMutation.mutate("heating_on")}
-                        disabled={!manualOutputControlsAvailable || outputMutation.isPending}
+                        aria-pressed={manualOutputTarget === "heating"}
+                        onClick={() => outputMutation.mutate("heating")}
+                        disabled={!manualOutputCanDriveHeatOrCool}
                       >
                         <Flame className="size-4" />
                         On
@@ -1216,12 +1244,12 @@ export function DeviceDetailApp({
                         type="button"
                         className={cn(
                           "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
-                          live.heating_state === "off"
+                          manualOutputTarget !== "heating"
                             ? "bg-[var(--heat-soft)] text-[var(--heat-soft-ink)] shadow-[0_8px_20px_rgba(212,106,58,0.14)] ring-1 ring-[var(--heat)]"
                             : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
                         )}
-                        aria-pressed={live.heating_state === "off"}
-                        onClick={() => outputMutation.mutate("heating_off")}
+                        aria-pressed={manualOutputTarget !== "heating"}
+                        onClick={() => outputMutation.mutate("off")}
                         disabled={!manualOutputControlsAvailable || outputMutation.isPending}
                       >
                         <Power className="size-4" />
@@ -1242,13 +1270,13 @@ export function DeviceDetailApp({
                         type="button"
                         className={cn(
                           "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
-                          live.cooling_state === "on"
+                          manualOutputTarget === "cooling"
                             ? "bg-[var(--cool)] text-white shadow-[0_10px_24px_rgba(63,134,198,0.2)]"
                             : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
                         )}
-                        aria-pressed={live.cooling_state === "on"}
-                        onClick={() => outputMutation.mutate("cooling_on")}
-                        disabled={!manualOutputControlsAvailable || outputMutation.isPending}
+                        aria-pressed={manualOutputTarget === "cooling"}
+                        onClick={() => outputMutation.mutate("cooling")}
+                        disabled={!manualOutputCanDriveHeatOrCool}
                       >
                         <Snowflake className="size-4" />
                         On
@@ -1257,12 +1285,12 @@ export function DeviceDetailApp({
                         type="button"
                         className={cn(
                           "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
-                          live.cooling_state === "off"
+                          manualOutputTarget !== "cooling"
                             ? "bg-[var(--cool-soft)] text-[var(--cool-soft-ink)] shadow-[0_8px_20px_rgba(63,134,198,0.14)] ring-1 ring-[var(--cool)]"
                             : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
                         )}
-                        aria-pressed={live.cooling_state === "off"}
-                        onClick={() => outputMutation.mutate("cooling_off")}
+                        aria-pressed={manualOutputTarget !== "cooling"}
+                        onClick={() => outputMutation.mutate("off")}
                         disabled={!manualOutputControlsAvailable || outputMutation.isPending}
                       >
                         <Power className="size-4" />
@@ -1980,16 +2008,28 @@ export function DeviceDetailApp({
                         current
                           ? {
                               ...current,
-                              mode: event.target.value as "thermostat" | "profile",
+                              mode: event.target.value as
+                                | "thermostat"
+                                | "profile"
+                                | "manual",
                             }
                           : current,
                       )
                     }
                   >
                     <option value="thermostat">Thermostat</option>
+                    <option value="manual">Manual</option>
                     <option value="profile">Profile</option>
                   </select>
                 </label>
+                {fermentationSetupDraft.mode === "manual" ? (
+                  <div className="rounded-[24px] border border-black/8 bg-white/72 p-5 text-sm leading-6 text-[var(--muted)]">
+                    Saving manual mode keeps thermostat safety limits and output
+                    delays active, but hands the retained output choice over to
+                    the operator. Entering manual mode starts with outputs off
+                    until you choose heating or cooling from the runtime actions.
+                  </div>
+                ) : null}
                 {fermentationSetupDraft.mode === "profile" ? (
                   <div className="grid gap-4 rounded-[24px] border border-black/8 bg-white/72 p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
