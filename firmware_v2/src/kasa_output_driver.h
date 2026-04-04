@@ -16,6 +16,7 @@ class KasaOutputDriver : public OutputDriver {
 
  private:
   bool sendCommand(const String &command, String &response);
+  static int parseErrCode(const String &response);
   static std::vector<uint8_t> encryptPayload(const String &payload);
   static String decryptPayload(const uint8_t *buffer, size_t length);
   void updateDescription();
