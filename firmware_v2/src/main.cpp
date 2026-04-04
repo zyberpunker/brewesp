@@ -123,7 +123,8 @@ bool shutOffForMutualExclusion(OutputDriver &output, const char *label) {
   if (output.setState(false)) {
     return true;
   }
-  Serial.printf("Refusing output handover because %s failed to turn off\n", label);
+  Serial.printf("Refusing output handover because %s failed to turn off (known=%s on=%s desc=%s)\n", label,
+                status.known ? "true" : "false", status.on ? "true" : "false", status.description.c_str());
   return false;
 }
 
@@ -372,8 +373,9 @@ void applyOutputCommand(const String &target, const String &state) {
   g_heating_output->refresh();
   g_cooling_output->refresh();
   g_state_dirty = true;
-  Serial.printf("Handled set_output target=%s state=%s changed=%s\n", target.c_str(), state.c_str(),
-                changed ? "true" : "false");
+  Serial.printf("Handled set_output target=%s state=%s changed=%s heating=%s cooling=%s\n", target.c_str(),
+                state.c_str(), changed ? "true" : "false", g_heating_output->status().description.c_str(),
+                g_cooling_output->status().description.c_str());
   publishStateIfConnected();
 }
 
