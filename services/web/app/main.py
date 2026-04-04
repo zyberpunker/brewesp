@@ -1015,6 +1015,8 @@ async def update_fermentation_profile(request: Request, profile_slug: str):
         )
         if profile is None:
             return JSONResponse({"error": "Profile not found"}, status_code=404)
+        if profile.is_builtin:
+            return JSONResponse({"error": "Built-in profiles cannot be updated"}, status_code=400)
 
         profile.name = name
         profile.profile_data = profile_data
