@@ -39,7 +39,8 @@
       "type": "string",
       "enum": [
         "thermostat",
-        "profile"
+        "profile",
+        "manual"
       ]
     },
     "thermostat": {
@@ -51,11 +52,31 @@
     "alarms": {
       "$ref": "#/$defs/alarms"
     },
+    "manual": {
+      "$ref": "#/$defs/manual"
+    },
     "profile": {
       "$ref": "#/$defs/profile"
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "manual"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "manual"
+        ]
+      }
+    },
     {
       "if": {
         "properties": {
@@ -203,6 +224,23 @@
           "minimum": 5,
           "maximum": 300,
           "default": 30
+        }
+      }
+    },
+    "manual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "output"
+      ],
+      "properties": {
+        "output": {
+          "type": "string",
+          "enum": [
+            "off",
+            "heating",
+            "cooling"
+          ]
         }
       }
     },

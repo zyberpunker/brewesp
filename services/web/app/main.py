@@ -373,6 +373,13 @@ def _default_profile_plan(config: DeviceFermentationConfig) -> dict:
     }
 
 
+def _default_manual_plan(config: DeviceFermentationConfig) -> dict:
+    output = (config.manual_output or "off").strip().lower()
+    if output not in {"off", "heating", "cooling"}:
+        output = "off"
+    return {"output": output}
+
+
 def _build_fermentation_config_payload(device: Device, config: DeviceFermentationConfig) -> dict:
     payload = {
         "schema_version": config.schema_version,
@@ -400,6 +407,8 @@ def _build_fermentation_config_payload(device: Device, config: DeviceFermentatio
             "sensor_stale_s": config.sensor_stale_s,
         },
     }
+    if config.mode == "manual":
+        payload["manual"] = _default_manual_plan(config)
     if config.mode == "profile":
         payload["profile"] = config.profile_plan or _default_profile_plan(config)
     return payload
@@ -414,6 +423,7 @@ def _store_profile_payload(config: DeviceFermentationConfig, payload: dict) -> N
     thermostat = payload.get("thermostat") or {}
     sensors = payload.get("sensors") or {}
     alarms = payload.get("alarms") or {}
+    manual = payload.get("manual") or {}
 
     config.setpoint_c = float(thermostat.get("setpoint_c", config.setpoint_c))
     config.hysteresis_c = float(thermostat.get("hysteresis_c", config.hysteresis_c))
@@ -440,6 +450,12 @@ def _store_profile_payload(config: DeviceFermentationConfig, payload: dict) -> N
         config.profile_plan = profile if isinstance(profile, dict) else _default_profile_plan(config)
     else:
         config.profile_plan = None
+
+    if config.mode == "manual":
+        output = str(manual.get("output", config.manual_output or "off")).strip().lower()
+        config.manual_output = output if output in {"off", "heating", "cooling"} else "off"
+    else:
+        config.manual_output = "off"
 
 
 def _build_profile_step_id(label: str, index: int, used_ids: set[str]) -> str:
@@ -660,8 +676,8 @@ def _validate_v2_payload(payload: dict) -> None:
 
     if payload.get("schema_version", 2) != 2:
         raise ValueError("schema_version must be 2")
-    if payload.get("mode") not in {"thermostat", "profile"}:
-        raise ValueError("mode must be thermostat or profile")
+    if payload.get("mode") not in {"thermostat", "profile", "manual"}:
+        raise ValueError("mode must be thermostat, profile or manual")
     thermostat = payload.get("thermostat")
     sensors = payload.get("sensors")
     alarms = payload.get("alarms")
@@ -783,6 +799,14 @@ def _validate_v2_payload(payload: dict) -> None:
                     f"profile.steps[{index}].advance_policy must be auto or manual_release"
                 )
 
+    if payload.get("mode") == "manual":
+        manual = payload.get("manual")
+        if not isinstance(manual, dict):
+            raise ValueError("manual payload is required for manual mode")
+        manual_output = str(manual.get("output", "")).strip()
+        if manual_output not in {"off", "heating", "cooling"}:
+            raise ValueError("manual.output must be off, heating or cooling")
+
 
 def _upsert_assignment(session, device: Device, role: str, relay: DiscoveredRelay | None) -> None:
     existing = next((assignment for assignment in device.output_assignments if assignment.role == role), None)
@@ -866,6 +890,7 @@ def _get_or_create_fermentation_config(session, device: Device) -> DeviceFerment
             control_sensor="primary",
             deviation_c=2.0,
             sensor_stale_s=30,
+            manual_output="off",
         )
         device.fermentation_config = config
         session.add(config)

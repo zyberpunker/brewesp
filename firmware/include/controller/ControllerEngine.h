@@ -12,6 +12,9 @@ public:
         WaitingForSensor,
         Heating,
         Cooling,
+        ManualOff,
+        ManualHeating,
+        ManualCooling,
         LockedHeating,
         LockedCooling,
         Fault,
@@ -45,6 +48,26 @@ private:
     bool setState(State nextState, const String& reason);
     uint32_t remainingSeconds(uint32_t lockedUntilMs, uint32_t nowMs) const;
     void updateSecondaryLimits(const FermentationConfig& config, const Inputs& inputs);
+    bool requestHeating(
+        const FermentationConfig& config,
+        const Inputs& inputs,
+        OutputManager& outputs,
+        State activeState,
+        const String& activeReason,
+        const String& lockedReason);
+    bool requestCooling(
+        const FermentationConfig& config,
+        const Inputs& inputs,
+        OutputManager& outputs,
+        State activeState,
+        const String& activeReason,
+        const String& lockedReason);
+    bool requestOff(
+        const FermentationConfig& config,
+        OutputManager& outputs,
+        const Inputs& inputs,
+        State state,
+        const String& reason);
 
     Status status_;
     uint32_t heatingLockedUntilMs_ = 0;

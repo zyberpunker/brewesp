@@ -533,6 +533,7 @@ void MqttManager::handleFermentationConfig(const String& payload) {
     const String mode = String(static_cast<const char*>(doc["mode"] | ""));
     JsonObject thermostat = doc["thermostat"];
     JsonObject sensors = doc["sensors"];
+    JsonObject manual = doc["manual"];
 
     JsonObject profile = doc["profile"];
     if (schemaVersion != 2 || version == 0 || deviceId.isEmpty() || thermostat.isNull() || sensors.isNull()) {
@@ -563,7 +564,7 @@ void MqttManager::handleFermentationConfig(const String& payload) {
         || secondaryLimitHysteresisC < 0.1f || secondaryLimitHysteresisC > 25.0f))
         || (controlSensor != "primary" && controlSensor != "secondary")
         || (controlSensor == "secondary" && !secondaryEnabled)
-        || (mode != "thermostat" && mode != "profile")) {
+        || (mode != "thermostat" && mode != "profile" && mode != "manual")) {
         Serial.println("[mqtt] fermentation config validation failed");
         pendingConfigApplied_.active = true;
         pendingConfigApplied_.requestedVersion = version;
@@ -589,6 +590,29 @@ void MqttManager::handleFermentationConfig(const String& payload) {
     updated.sensors.secondaryLimitHysteresisC =
         secondaryEnabled ? secondaryLimitHysteresisC : 1.5f;
     updated.sensors.controlSensor = controlSensor;
+
+    if (mode == "manual") {
+        if (manual.isNull()) {
+            pendingConfigApplied_.active = true;
+            pendingConfigApplied_.requestedVersion = version;
+            pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
+            pendingConfigApplied_.result = "error";
+            pendingConfigApplied_.message = "manual payload required for manual mode";
+            return;
+        }
+
+        updated.manual.output = String(static_cast<const char*>(manual["output"] | ""));
+        if (
+            updated.manual.output != "off" && updated.manual.output != "heating"
+            && updated.manual.output != "cooling") {
+            pendingConfigApplied_.active = true;
+            pendingConfigApplied_.requestedVersion = version;
+            pendingConfigApplied_.appliedVersion = lastAppliedFermentationVersion_;
+            pendingConfigApplied_.result = "error";
+            pendingConfigApplied_.message = "manual output validation failed";
+            return;
+        }
+    }
 
     if (mode == "profile") {
         if (profile.isNull()) {
