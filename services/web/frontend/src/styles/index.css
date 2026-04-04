@@ -9,7 +9,13 @@
   --muted: #66736d;
   --accent: #2f6c60;
   --cool: #3f86c6;
+  --cool-soft: #d8e8f6;
+  --cool-soft-ink: #235b8f;
+  --cool-soft-ring: #9fc4e5;
   --heat: #d46a3a;
+  --heat-soft: #f2ddd3;
+  --heat-soft-ink: #9b4a23;
+  --heat-soft-ring: #e3b49f;
   --fault: #b2413b;
 }
 

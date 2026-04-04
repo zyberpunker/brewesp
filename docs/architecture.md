@@ -162,6 +162,9 @@ The ESP32 firmware should be split into small modules with clear boundaries.
 - Kasa discovery results are ingested over MQTT and shown back in the device
   routing workflow
 - the same service hosts the OTA manifest and firmware binary download
+- the device detail UI now disables manual output controls while automatic
+  thermostat/profile control is active, because a persistent operator-owned
+  output mode does not exist yet
 
 ## Docker deployment shape
 
@@ -415,3 +418,55 @@ Frequently changed process data:
 
 This should be distributed over MQTT from the web service and cached locally in
 NVS by the ESP32.
+
+Planned run modes:
+
+- `thermostat`
+- `profile`
+- `manual`
+
+### Planned `manual` mode behavior
+
+`manual` should be a first-class run mode, not just a momentary output command.
+
+When `mode == "manual"`:
+
+- the thermostat controller must stop making automatic heating/cooling
+  decisions
+- profile progression, ramping, and profile-triggered output changes must be
+  inactive
+- the operator should choose exactly one of three manual output states:
+  `heating`, `off`, or `cooling`
+- `heating` and `cooling` must remain mutually exclusive exactly as they are in
+  automatic modes
+
+Safety rules for `manual` mode:
+
+- sensor fault, stale sensor, invalid control sensor, or any other control-path
+  safety fault must still force both outputs off locally
+- manual mode must not bypass output delays, relay protection, or the rule that
+  heating and cooling may never be active together
+- loss of MQTT, Wi-Fi, or web connectivity must not leave the controller in an
+  unsafe output state
+
+Operator workflow expectations:
+
+- entering `manual` mode should default to outputs off until the operator makes
+  an explicit `heating` or `cooling` choice
+- the web UI and local UI should only present persistent manual output controls
+  when the active run mode is `manual`
+- while in `thermostat` or `profile`, imperative output buttons should be
+  hidden or disabled because automatic control would immediately reclaim the
+  outputs
+- leaving `manual` mode for `thermostat` or `profile` should first drive both
+  outputs off, then hand control back to the automatic mode
+
+Configuration expectations:
+
+- `fermentation_config.mode` should eventually allow `manual` in addition to
+  `thermostat` and `profile`
+- the retained config should carry enough state for the controller to restore
+  manual intent after reboot, but it should not restore an unsafe active output
+  blindly without re-checking safety conditions
+- imperative `set_output` commands should be treated as operator actions within
+  `manual` mode, not as a substitute for having a real persistent manual mode
