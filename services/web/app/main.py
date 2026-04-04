@@ -1195,7 +1195,7 @@ async def update_output_routing(request: Request, device_id: str):
         response_payload = _build_output_routing_payload(device, discovered_relays)
         session.commit()
 
-    mqtt_bridge.publish_system_config(device.device_id, publish_payload)
+    mqtt_bridge.publish_system_config(device_id, publish_payload)
     return JSONResponse(response_payload)
 
 

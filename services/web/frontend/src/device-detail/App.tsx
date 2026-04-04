@@ -44,6 +44,7 @@ import type {
   FermentationPlan,
   TelemetryWindow,
 } from "@/device-detail/types";
+import { cn } from "@/lib/utils";
 
 function formatTemperature(value: number | null | undefined) {
   if (typeof value !== "number" || Number.isNaN(value)) {
@@ -670,6 +671,7 @@ export function DeviceDetailApp({
     () => JSON.stringify(live.last_payload ?? {}, null, 2),
     [live.last_payload],
   );
+  const manualOutputControlsAvailable = !live.automatic_control_active;
   const isConfirmPending =
     outputMutation.isPending || profileMutation.isPending || targetMutation.isPending;
   const isFermentationSetupPending = fermentationSetupMutation.isPending;
@@ -1171,41 +1173,104 @@ export function DeviceDetailApp({
                 </Button>
               </div>
 
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button
-                  tone="heat"
-                  data-active={live.heating_state === "on"}
-                  onClick={() => outputMutation.mutate("heating_on")}
-                  disabled={outputMutation.isPending}
-                >
-                  <Flame className="size-4" />
-                  Heat on
-                </Button>
-                <Button
-                  tone="heat"
-                  onClick={() => outputMutation.mutate("heating_off")}
-                  disabled={outputMutation.isPending}
-                >
-                  <Power className="size-4" />
-                  Heat off
-                </Button>
-                <Button
-                  tone="cool"
-                  data-active={live.cooling_state === "on"}
-                  onClick={() => outputMutation.mutate("cooling_on")}
-                  disabled={outputMutation.isPending}
-                >
-                  <Snowflake className="size-4" />
-                  Cool on
-                </Button>
-                <Button
-                  tone="cool"
-                  onClick={() => outputMutation.mutate("cooling_off")}
-                  disabled={outputMutation.isPending}
-                >
-                  <Power className="size-4" />
-                  Cool off
-                </Button>
+              <div className="grid gap-3">
+                {!manualOutputControlsAvailable ? (
+                  <div className="rounded-[22px] border border-black/8 bg-[var(--surface-strong)] p-4 text-sm leading-6 text-[var(--muted)]">
+                    Automatic control is currently active in{" "}
+                    <strong className="text-[var(--ink)] capitalize">
+                      {live.last_mode ?? "runtime"}
+                    </strong>
+                    . Manual output commands are disabled because thermostat or
+                    profile control would immediately take the outputs back. A real
+                    <strong className="text-[var(--ink)]"> manual </strong>
+                    mode needs to exist before persistent heat/off/cool control makes
+                    sense here.
+                  </div>
+                ) : null}
+
+                <div className={cn("grid gap-3", !manualOutputControlsAvailable && "opacity-55")}>
+                  <div className="grid gap-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-[var(--ink)]">Heating</p>
+                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                        {live.heating_state === "on" ? "On" : "Off"}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 rounded-full bg-white/72 p-1 ring-1 ring-black/8 shadow-[0_14px_28px_rgba(47,108,96,0.08)]">
+                      <button
+                        type="button"
+                        className={cn(
+                          "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
+                          live.heating_state === "on"
+                            ? "bg-[var(--heat)] text-white shadow-[0_10px_24px_rgba(212,106,58,0.2)]"
+                            : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
+                        )}
+                        aria-pressed={live.heating_state === "on"}
+                        onClick={() => outputMutation.mutate("heating_on")}
+                        disabled={!manualOutputControlsAvailable || outputMutation.isPending}
+                      >
+                        <Flame className="size-4" />
+                        On
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
+                          live.heating_state === "off"
+                            ? "bg-[var(--heat-soft)] text-[var(--heat-soft-ink)] shadow-[0_8px_20px_rgba(212,106,58,0.14)] ring-1 ring-[var(--heat)]"
+                            : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
+                        )}
+                        aria-pressed={live.heating_state === "off"}
+                        onClick={() => outputMutation.mutate("heating_off")}
+                        disabled={!manualOutputControlsAvailable || outputMutation.isPending}
+                      >
+                        <Power className="size-4" />
+                        Off
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-[var(--ink)]">Cooling</p>
+                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                        {live.cooling_state === "on" ? "On" : "Off"}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 rounded-full bg-white/72 p-1 ring-1 ring-black/8 shadow-[0_14px_28px_rgba(47,108,96,0.08)]">
+                      <button
+                        type="button"
+                        className={cn(
+                          "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
+                          live.cooling_state === "on"
+                            ? "bg-[var(--cool)] text-white shadow-[0_10px_24px_rgba(63,134,198,0.2)]"
+                            : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
+                        )}
+                        aria-pressed={live.cooling_state === "on"}
+                        onClick={() => outputMutation.mutate("cooling_on")}
+                        disabled={!manualOutputControlsAvailable || outputMutation.isPending}
+                      >
+                        <Snowflake className="size-4" />
+                        On
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition duration-150 disabled:cursor-not-allowed",
+                          live.cooling_state === "off"
+                            ? "bg-[var(--cool-soft)] text-[var(--cool-soft-ink)] shadow-[0_8px_20px_rgba(63,134,198,0.14)] ring-1 ring-[var(--cool)]"
+                            : "text-[var(--muted)] hover:bg-white/80 hover:text-[var(--ink)]",
+                        )}
+                        aria-pressed={live.cooling_state === "off"}
+                        onClick={() => outputMutation.mutate("cooling_off")}
+                        disabled={!manualOutputControlsAvailable || outputMutation.isPending}
+                      >
+                        <Power className="size-4" />
+                        Off
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div className="grid gap-2">
@@ -1244,7 +1309,7 @@ export function DeviceDetailApp({
                 <Button
                   variant="danger"
                   onClick={() => setConfirmAction("all_off")}
-                  disabled={outputMutation.isPending}
+                  disabled={!manualOutputControlsAvailable || outputMutation.isPending}
                 >
                   <Power className="size-4" />
                   All outputs off

@@ -19,8 +19,10 @@ const buttonVariants = cva(
       },
       tone: {
         neutral: "",
-        heat: "data-[active=true]:bg-[var(--heat)] data-[active=true]:text-white",
-        cool: "data-[active=true]:bg-[var(--cool)] data-[active=true]:text-white",
+        heat:
+          "data-[active=true]:bg-[var(--heat)] data-[active=true]:text-white data-[active=true]:shadow-[0_10px_24px_rgba(212,106,58,0.2)]",
+        cool:
+          "data-[active=true]:bg-[var(--cool)] data-[active=true]:text-white data-[active=true]:shadow-[0_10px_24px_rgba(63,134,198,0.2)]",
       },
     },
     defaultVariants: {

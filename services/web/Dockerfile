@@ -19,7 +19,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-COPY --from=frontend-build /frontend/dist/react ./app/static/react
+COPY --from=frontend-build /app/static/react ./app/static/react
 RUN mkdir -p /app/firmware-files
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
