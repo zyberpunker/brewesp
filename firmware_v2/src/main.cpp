@@ -3,7 +3,10 @@
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ctype.h>
 #include <esp_system.h>
+#include <math.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include <memory>
@@ -24,6 +27,7 @@ constexpr uint32_t kOutputRefreshIntervalMs = 30000;
 constexpr uint32_t kMqttReconnectIntervalMs = 5000;
 constexpr uint32_t kWifiRetryIntervalMs = 500;
 constexpr uint32_t kWifiReconnectIntervalMs = 10000;
+constexpr uint8_t kLocalProfileEditorMaxSteps = 7;
 
 ConfigStore g_store;
 ProvisioningServer g_provisioning;
@@ -81,7 +85,159 @@ String htmlEscape(String value) {
   value.replace("<", "&lt;");
   value.replace(">", "&gt;");
   value.replace("\"", "&quot;");
+  value.replace("'", "&#39;");
   return value;
+}
+
+String selectedAttr(bool selected) {
+  return selected ? " selected" : "";
+}
+
+String disabledAttr(bool disabled) {
+  return disabled ? " disabled" : "";
+}
+
+uint32_t nextLocalConfigVersion() {
+  return g_fermentation_config.version == 0 ? 1 : g_fermentation_config.version + 1;
+}
+
+bool storedProfileAvailable() {
+  return g_fermentation_config.profile.step_count > 0 && !g_fermentation_config.profile.id.isEmpty();
+}
+
+uint8_t localEditorStepCount() {
+  if (g_fermentation_config.profile.step_count == 0) {
+    return 1;
+  }
+  return g_fermentation_config.profile.step_count > kLocalProfileEditorMaxSteps ? kLocalProfileEditorMaxSteps
+                                                                                : g_fermentation_config.profile.step_count;
+}
+
+String formatFloatInput(float value, uint8_t decimals = 2) {
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "%.*f", decimals, value);
+  String text(buffer);
+  while (text.endsWith("0")) {
+    text.remove(text.length() - 1);
+  }
+  if (text.endsWith(".")) {
+    text.remove(text.length() - 1);
+  }
+  return text;
+}
+
+String formatHoursInput(uint32_t duration_s) {
+  if (duration_s == 0) {
+    return "";
+  }
+  return formatFloatInput(static_cast<float>(duration_s) / 3600.0f, 2);
+}
+
+bool parseStrictFloat(String value, float &result) {
+  value.trim();
+  if (value.isEmpty()) {
+    return false;
+  }
+
+  char *end = nullptr;
+  result = strtof(value.c_str(), &end);
+  while (end != nullptr && *end != '\0' && isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  return end != value.c_str() && end != nullptr && *end == '\0' && isfinite(result);
+}
+
+bool parseStrictUint32(String value, uint32_t &result) {
+  value.trim();
+  if (value.isEmpty() || value[0] == '-') {
+    return false;
+  }
+
+  char *end = nullptr;
+  const unsigned long parsed = strtoul(value.c_str(), &end, 10);
+  while (end != nullptr && *end != '\0' && isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (end == value.c_str() || end == nullptr || *end != '\0') {
+    return false;
+  }
+
+  result = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+bool parseDurationHours(String value, const String &field_label, uint32_t &seconds, String &error) {
+  value.trim();
+  if (value.isEmpty()) {
+    seconds = 0;
+    return true;
+  }
+
+  float hours = 0.0f;
+  if (!parseStrictFloat(value, hours) || hours < 0.0f) {
+    error = field_label + " must be a non-negative number of hours";
+    return false;
+  }
+
+  const double total_seconds = static_cast<double>(hours) * 3600.0;
+  if (total_seconds > 3596400.0) {
+    error = field_label + " must be <= 999 hours";
+    return false;
+  }
+
+  seconds = static_cast<uint32_t>(total_seconds + 0.5);
+  return true;
+}
+
+String slugifyIdentifier(String value, const String &fallback) {
+  value.trim();
+  String slug;
+  slug.reserve(value.length());
+  bool pending_dash = false;
+
+  for (size_t index = 0; index < value.length(); ++index) {
+    const char raw = value[index];
+    const unsigned char current = static_cast<unsigned char>(raw);
+    if (isalnum(current)) {
+      if (pending_dash && !slug.isEmpty() && !slug.endsWith("-")) {
+        slug += '-';
+      }
+      slug += static_cast<char>(tolower(current));
+      pending_dash = false;
+      continue;
+    }
+    if (raw == '-' || raw == '_' || isspace(current)) {
+      pending_dash = !slug.isEmpty();
+    }
+  }
+
+  if (slug.endsWith("-")) {
+    slug.remove(slug.length() - 1);
+  }
+  if (slug.isEmpty()) {
+    slug = fallback;
+  }
+  return slug;
+}
+
+String profileStepId(const String &label, uint8_t index) {
+  return slugifyIdentifier(label, "step") + "-" + String(index + 1);
+}
+
+void appendProfileRuntimeJson(JsonObject runtime, uint32_t now_ms) {
+  runtime["active_profile_id"] = g_profile_runtime.state().active_profile_id;
+  runtime["active_step_id"] = g_profile_runtime.state().active_step_id;
+  runtime["active_step_index"] = g_profile_runtime.state().active_step_index;
+  runtime["phase"] = g_profile_runtime.state().phase;
+  runtime["step_started_at"] = g_profile_runtime.stepStartedAtSeconds(now_ms);
+  if (g_profile_runtime.hasStepHoldStarted()) {
+    runtime["step_hold_started_at"] = g_profile_runtime.stepHoldStartedAtSeconds(now_ms);
+  } else {
+    runtime["step_hold_started_at"] = nullptr;
+  }
+  runtime["effective_target_c"] = g_profile_runtime.effectiveTargetC(g_fermentation_config);
+  runtime["waiting_for_manual_release"] = g_profile_runtime.state().waiting_for_manual_release;
+  runtime["paused"] = g_profile_runtime.state().paused;
 }
 
 String topicBase() {
@@ -173,33 +329,292 @@ void publishStateIfConnected() {
   }
 }
 
-String localControlPage(const String &message) {
+bool saveLocalFermentationConfig(const FermentationConfig &candidate, const char *source, String &error) {
+  if (!localConfigWritable()) {
+    error = "local profile editing requires config_owner=local";
+    return false;
+  }
+
+  FermentationConfig validated = candidate;
+  if (!validateFermentationConfig(validated, g_system_config.device_id, error)) {
+    return false;
+  }
+
+  const FermentationConfig previous = g_fermentation_config;
+  g_fermentation_config = validated;
+  if (!g_store.saveFermentationConfig(g_fermentation_config)) {
+    g_fermentation_config = previous;
+    error = "failed to persist fermentation_config";
+    return false;
+  }
+
+  syncProfileRuntime();
+  g_state_dirty = true;
+  Serial.printf("Saved local fermentation_config via %s version=%lu mode=%s profile_steps=%u\n", source,
+                static_cast<unsigned long>(g_fermentation_config.version), g_fermentation_config.mode.c_str(),
+                g_fermentation_config.profile.step_count);
+  publishStateIfConnected();
+  return true;
+}
+
+bool buildLocalProfileCandidateFromForm(FermentationConfig &candidate, String &error) {
+  uint32_t step_count = 0;
+  if (!parseStrictUint32(g_local_server.arg("step_count"), step_count) || step_count == 0 ||
+      step_count > kLocalProfileEditorMaxSteps) {
+    error = "step_count must be between 1 and 7";
+    return false;
+  }
+
+  candidate = g_fermentation_config;
+  candidate.schema_version = 2;
+  candidate.device_id = g_system_config.device_id;
+  candidate.version = nextLocalConfigVersion();
+
+  String name = g_local_server.arg("name");
+  name.trim();
+  if (name.isEmpty()) {
+    name = candidate.name;
+  }
+  if (name.isEmpty()) {
+    name = "Local profile";
+  }
+  candidate.name = name;
+
+  String profile_id = g_local_server.arg("profile_id");
+  profile_id.trim();
+  if (profile_id.isEmpty()) {
+    profile_id = candidate.profile.id;
+  }
+  if (profile_id.isEmpty()) {
+    profile_id = candidate.name;
+  }
+
+  candidate.profile = ProfileConfig();
+  candidate.profile.id = slugifyIdentifier(profile_id, "local-profile");
+  candidate.profile.step_count = static_cast<uint8_t>(step_count);
+
+  for (uint8_t index = 0; index < candidate.profile.step_count; ++index) {
+    const String prefix = "step_" + String(index + 1) + "_";
+    ProfileStepConfig &step = candidate.profile.steps[index];
+
+    String label = g_local_server.arg(prefix + "label");
+    label.trim();
+    if (label.isEmpty()) {
+      label = "Step " + String(index + 1);
+    }
+    step.label = label;
+    step.id = profileStepId(label, index);
+
+    const String target_field = prefix + "target_c";
+    if (!parseStrictFloat(g_local_server.arg(target_field), step.target_c)) {
+      error = "Step " + String(index + 1) + " target temperature must be a number";
+      return false;
+    }
+
+    if (!parseDurationHours(g_local_server.arg(prefix + "hold_hours"),
+                            "Step " + String(index + 1) + " hold duration", step.hold_duration_s, error)) {
+      return false;
+    }
+    if (!parseDurationHours(g_local_server.arg(prefix + "ramp_hours"),
+                            "Step " + String(index + 1) + " ramp duration", step.ramp_duration_s, error)) {
+      return false;
+    }
+
+    step.advance_policy = g_local_server.arg(prefix + "advance_policy");
+    step.advance_policy.trim();
+    if (step.advance_policy != "auto" && step.advance_policy != "manual_release") {
+      error = "Step " + String(index + 1) + " advance policy must be auto or manual_release";
+      return false;
+    }
+  }
+
+  return validateFermentationConfig(candidate, g_system_config.device_id, error);
+}
+
+String localProfileCommandSuccessMessage(const String &command) {
+  if (command == "profile_start") {
+    return "Profile started from step 1.";
+  }
+  if (command == "profile_pause") {
+    return "Profile paused.";
+  }
+  if (command == "profile_resume") {
+    return "Profile resumed.";
+  }
+  if (command == "profile_release_hold") {
+    return "Manual hold released.";
+  }
+  if (command == "profile_stop") {
+    return "Profile stopped. Thermostat mode remains active with the last effective target.";
+  }
+  return "Profile command applied.";
+}
+
+bool applyLocalProfileCommand(const String &command, String &error) {
+  if (!localConfigWritable()) {
+    error = "local profile commands require config_owner=local";
+    return false;
+  }
+
+  if (command == "profile_start") {
+    if (!storedProfileAvailable()) {
+      error = "save a local profile before starting it";
+      return false;
+    }
+
+    FermentationConfig candidate = g_fermentation_config;
+    candidate.device_id = g_system_config.device_id;
+    candidate.mode = "profile";
+    candidate.version = nextLocalConfigVersion();
+    return saveLocalFermentationConfig(candidate, "local_http_profile_start", error);
+  }
+
+  if (command != "profile_pause" && command != "profile_resume" && command != "profile_release_hold" &&
+      command != "profile_stop") {
+    error = "unsupported local profile command";
+    return false;
+  }
+
+  if (!g_profile_runtime.handleCommand(g_fermentation_config, command, "", g_store, millis())) {
+    if (command == "profile_pause") {
+      error = "profile_pause requires an active profile that is not already paused";
+    } else if (command == "profile_resume") {
+      error = "profile_resume requires a paused profile";
+    } else if (command == "profile_release_hold") {
+      error = "profile_release_hold requires a manual-release hold";
+    } else if (command == "profile_stop") {
+      error = "profile_stop requires profile mode";
+    } else {
+      error = "profile command failed";
+    }
+    return false;
+  }
+
+  g_state_dirty = true;
+  Serial.printf("Handled local profile command=%s\n", command.c_str());
+  publishStateIfConnected();
+  return true;
+}
+
+String localControlPage(const String &message, bool is_error) {
+  const bool writable = localConfigWritable();
+  const bool runtime_active = g_fermentation_config.mode == "profile" && g_profile_runtime.active();
+  const bool profile_too_large = g_fermentation_config.profile.step_count > kLocalProfileEditorMaxSteps;
+  const bool can_start = writable && storedProfileAvailable();
+  const bool can_pause = writable && runtime_active && !g_profile_runtime.state().paused &&
+                         g_profile_runtime.state().phase != "completed";
+  const bool can_resume = writable && runtime_active && g_profile_runtime.state().paused;
+  const bool can_release = writable && runtime_active && g_profile_runtime.state().waiting_for_manual_release;
+  const bool can_stop = writable && g_fermentation_config.mode == "profile";
+  const uint8_t visible_steps = localEditorStepCount();
+
   String page;
-  page.reserve(3072);
+  page.reserve(16384);
   page += "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  page += "<title>BrewESP Control Owner</title><style>";
-  page += "body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f1ea;color:#1f2a30;}main{max-width:760px;margin:0 auto;padding:24px;}";
-  page += "section{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 4px 14px rgba(0,0,0,.08);}label{display:block;font-weight:600;margin:10px 0 6px;}";
-  page += "input,select{width:100%;padding:10px;border:1px solid #c9ced3;border-radius:8px;box-sizing:border-box;}button{background:#1f6b75;color:#fff;border:0;padding:12px 18px;border-radius:8px;font-weight:700;cursor:pointer;}";
-  page += ".banner{background:#dfeee8;border-left:4px solid #1f6b75;padding:12px 14px;border-radius:8px;margin-bottom:16px;}.meta{color:#55636d;}";
-  page += "</style></head><body><main><section><h1>Control Owner</h1>";
+  page += "<title>BrewESP Local Control</title><style>";
+  page += "body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f1ea;color:#1f2a30;}main{max-width:980px;margin:0 auto;padding:24px;}";
+  page += "section{background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 4px 14px rgba(0,0,0,.08);}h1,h2,h3{margin:0 0 12px;}p{margin:0 0 10px;line-height:1.45;}";
+  page += ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;}.card{background:#f9f6f0;border:1px solid #e3ddd2;border-radius:10px;padding:12px;}";
+  page += "label{display:block;font-weight:600;margin:10px 0 6px;}input,select{width:100%;padding:10px;border:1px solid #c9ced3;border-radius:8px;box-sizing:border-box;background:#fff;}";
+  page += "button{background:#1f6b75;color:#fff;border:0;padding:12px 18px;border-radius:8px;font-weight:700;cursor:pointer;}button[disabled],input[disabled],select[disabled]{opacity:.55;cursor:not-allowed;}";
+  page += ".button-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;}.banner{padding:12px 14px;border-radius:8px;margin-bottom:16px;}.banner.ok{background:#dfeee8;border-left:4px solid #1f6b75;}.banner.error{background:#f9e2de;border-left:4px solid #a6432b;}";
+  page += ".meta{color:#55636d;}.step-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}.step{border:1px solid #d8d2c8;border-radius:12px;padding:14px;background:#fbfaf7;}.step.inactive{opacity:.78;}.help{font-size:.95rem;color:#55636d;}";
+  page += "</style></head><body><main><section><h1>Local Control</h1>";
   if (!message.isEmpty()) {
-    page += "<div class='banner'>" + htmlEscape(message) + "</div>";
+    page += "<div class='banner " + String(is_error ? "error" : "ok") + "'>" + htmlEscape(message) + "</div>";
   }
   page += "<p class='meta'>Device: " + htmlEscape(g_system_config.device_id) + "<br>Current owner: " +
           htmlEscape(g_system_config.config_owner) +
           "<br>MQTT configured: " + String(mqttConfigured(g_system_config) ? "yes" : "no") +
-          "<br>MQTT connected: " + String(g_mqtt_client.connected() ? "yes" : "no") + "</p>";
+          "<br>MQTT connected: " + String(g_mqtt_client.connected() ? "yes" : "no") +
+          "<br>Current mode: " + htmlEscape(g_fermentation_config.mode) +
+          "<br>Stored profile steps: " + String(g_fermentation_config.profile.step_count) +
+          "<br>Active config version: " + String(g_fermentation_config.version) + "</p></section>";
+
+  page += "<section><h2>Config Owner</h2><p class='help'>Profile editing and local run commands are only writable while ownership is <code>local</code>.</p>";
   page += "<form method='post' action='/control-owner'><label>Config owner</label>";
   page += "<select name='owner'><option value='local' " + String(g_system_config.config_owner == kConfigOwnerLocal ? "selected" : "") +
           ">local</option><option value='external' " +
           String(g_system_config.config_owner == kConfigOwnerExternal ? "selected" : "") + ">external</option></select>";
-  page += "<button type='submit'>Apply without reboot</button></form></section></main></body></html>";
+  page += "<div class='button-row'><button type='submit'>Apply without reboot</button></div></form></section>";
+
+  page += "<section><h2>Profile Runtime</h2><div class='grid'>";
+  page += "<div class='card'><strong>Stored profile</strong><p class='meta'>ID: " +
+          htmlEscape(storedProfileAvailable() ? g_fermentation_config.profile.id : String("none")) +
+          "<br>Name: " + htmlEscape(g_fermentation_config.name.isEmpty() ? String("unnamed") : g_fermentation_config.name) +
+          "<br>Current mode: " + htmlEscape(g_fermentation_config.mode) + "</p></div>";
+  page += "<div class='card'><strong>Runtime</strong><p class='meta'>";
+  if (runtime_active) {
+    page += "Phase: " + htmlEscape(g_profile_runtime.state().phase) +
+            "<br>Active step: " + String(g_profile_runtime.state().active_step_index + 1) +
+            "<br>Effective target: " + formatFloatInput(g_profile_runtime.effectiveTargetC(g_fermentation_config), 2) + " C" +
+            "<br>Waiting manual release: " + String(g_profile_runtime.state().waiting_for_manual_release ? "yes" : "no");
+  } else {
+    page += "No active local profile runtime.";
+  }
+  page += "</p></div></div>";
+  page += "<p class='help'>Start restarts the stored profile from step 1. Stop returns to thermostat mode but keeps the stored profile saved on the device.</p>";
+  page += "<form method='post' action='/profile/command'><div class='button-row'>";
+  page += "<button type='submit' name='command' value='profile_start'" + disabledAttr(!can_start) + ">Start profile</button>";
+  page += "<button type='submit' name='command' value='profile_pause'" + disabledAttr(!can_pause) + ">Pause</button>";
+  page += "<button type='submit' name='command' value='profile_resume'" + disabledAttr(!can_resume) + ">Resume</button>";
+  page += "<button type='submit' name='command' value='profile_release_hold'" + disabledAttr(!can_release) + ">Release hold</button>";
+  page += "<button type='submit' name='command' value='profile_stop'" + disabledAttr(!can_stop) + ">Stop</button>";
+  page += "</div></form></section>";
+
+  page += "<section><h2>Profile Editor</h2>";
+  if (!writable) {
+    page += "<div class='banner error'>Switch ownership to <code>local</code> before saving or running a profile from the ESP.</div>";
+  }
+  if (profile_too_large) {
+    page += "<div class='banner error'>The stored profile currently has more than 7 steps. This local editor shows the first 7 and saving will replace the stored profile with up to 7 steps.</div>";
+  }
+  page += "<p class='help'>This is a fallback editor, not the full web profile manager. Enter the number of active steps and the device will save only those first steps.</p>";
+  page += "<form method='post' action='/profile/save'>";
+  page += "<div class='grid'>";
+  page += "<div><label>Profile name</label><input name='name' value='" +
+          htmlEscape(g_fermentation_config.name.isEmpty() ? String("Local profile") : g_fermentation_config.name) + "'" +
+          disabledAttr(!writable) + "></div>";
+  page += "<div><label>Profile id</label><input name='profile_id' value='" +
+          htmlEscape(g_fermentation_config.profile.id.isEmpty() ? String("local-profile") : g_fermentation_config.profile.id) + "'" +
+          disabledAttr(!writable) + "></div>";
+  page += "<div><label>Active steps</label><select name='step_count'" + disabledAttr(!writable) + ">";
+  for (uint8_t count = 1; count <= kLocalProfileEditorMaxSteps; ++count) {
+    page += "<option value='" + String(count) + "'" + selectedAttr(count == visible_steps) + ">" + String(count) + "</option>";
+  }
+  page += "</select></div></div>";
+  page += "<div class='step-grid'>";
+  for (uint8_t index = 0; index < kLocalProfileEditorMaxSteps; ++index) {
+    ProfileStepConfig step;
+    if (index < g_fermentation_config.profile.step_count) {
+      step = g_fermentation_config.profile.steps[index];
+    } else {
+      step.label = "Step " + String(index + 1);
+      step.target_c = index == 0 ? g_fermentation_config.thermostat.setpoint_c : 20.0f;
+    }
+    const String prefix = "step_" + String(index + 1) + "_";
+    const bool active = index < visible_steps;
+    page += "<div class='step" + String(active ? "" : " inactive") + "'><h3>Step " + String(index + 1) + "</h3>";
+    page += "<label>Label</label><input name='" + prefix + "label' value='" + htmlEscape(step.label) + "'" +
+            disabledAttr(!writable) + ">";
+    page += "<label>Target temperature (C)</label><input name='" + prefix + "target_c' type='number' step='0.1' value='" +
+            htmlEscape(formatFloatInput(step.target_c, 2)) + "'" + disabledAttr(!writable) + ">";
+    page += "<label>Hold duration (hours)</label><input name='" + prefix + "hold_hours' type='number' min='0' step='0.25' value='" +
+            htmlEscape(formatHoursInput(step.hold_duration_s)) + "'" + disabledAttr(!writable) + ">";
+    page += "<label>Ramp duration (hours, optional)</label><input name='" + prefix + "ramp_hours' type='number' min='0' step='0.25' value='" +
+            htmlEscape(formatHoursInput(step.ramp_duration_s)) + "'" + disabledAttr(!writable) + ">";
+    page += "<label>Advance policy</label><select name='" + prefix + "advance_policy'" + disabledAttr(!writable) + ">";
+    page += "<option value='auto'" + selectedAttr(step.advance_policy != "manual_release") + ">auto</option>";
+    page += "<option value='manual_release'" + selectedAttr(step.advance_policy == "manual_release") + ">manual_release</option>";
+    page += "</select></div>";
+  }
+  page += "</div><div class='button-row'><button type='submit'" + disabledAttr(!writable) + ">Save local profile</button></div></form></section>";
+  page += "</main></body></html>";
   return page;
 }
 
 void sendLocalRuntimeState() {
-  DynamicJsonDocument doc(512);
+  DynamicJsonDocument doc(4096);
   doc["device_id"] = g_system_config.device_id;
   doc["config_owner"] = g_system_config.config_owner;
   doc["local_config_writable"] = localConfigWritable();
@@ -208,6 +623,30 @@ void sendLocalRuntimeState() {
   doc["mqtt_connected"] = g_mqtt_client.connected();
   doc["mode"] = g_fermentation_config.valid ? g_fermentation_config.mode : "thermostat";
   doc["active_config_version"] = g_fermentation_config.version;
+  doc["name"] = g_fermentation_config.name;
+  doc["local_profile_editor_max_steps"] = kLocalProfileEditorMaxSteps;
+  doc["stored_profile_available"] = storedProfileAvailable();
+  doc["stored_profile_step_count"] = g_fermentation_config.profile.step_count;
+  doc["stored_profile_truncated_for_local_editor"] = g_fermentation_config.profile.step_count > kLocalProfileEditorMaxSteps;
+  if (storedProfileAvailable()) {
+    JsonObject profile = doc.createNestedObject("profile");
+    profile["id"] = g_fermentation_config.profile.id;
+    JsonArray steps = profile.createNestedArray("steps");
+    for (uint8_t index = 0; index < g_fermentation_config.profile.step_count; ++index) {
+      const ProfileStepConfig &step = g_fermentation_config.profile.steps[index];
+      JsonObject entry = steps.createNestedObject();
+      entry["id"] = step.id;
+      entry["label"] = step.label;
+      entry["target_c"] = step.target_c;
+      entry["hold_duration_s"] = step.hold_duration_s;
+      entry["ramp_duration_s"] = step.ramp_duration_s;
+      entry["advance_policy"] = step.advance_policy;
+    }
+  }
+  if (g_fermentation_config.mode == "profile" && g_profile_runtime.active()) {
+    JsonObject runtime = doc.createNestedObject("profile_runtime");
+    appendProfileRuntimeJson(runtime, millis());
+  }
   String payload;
   serializeJson(doc, payload);
   g_local_server.send(200, "application/json", payload);
@@ -282,16 +721,16 @@ bool applyConfigOwnerChange(const String &requested_owner, const char *source, S
 }
 
 void handleLocalControlRoot() {
-  g_local_server.send(200, "text/html", localControlPage(""));
+  g_local_server.send(200, "text/html", localControlPage("", false));
 }
 
 void handleLocalControlOwnerForm() {
   String error;
   if (!applyConfigOwnerChange(g_local_server.arg("owner"), "local_http_form", error)) {
-    g_local_server.send(409, "text/html", localControlPage(error));
+    g_local_server.send(409, "text/html", localControlPage(error, true));
     return;
   }
-  g_local_server.send(200, "text/html", localControlPage("Config owner updated without reboot."));
+  g_local_server.send(200, "text/html", localControlPage("Config owner updated without reboot.", false));
 }
 
 void handleLocalControlOwnerApi() {
@@ -314,12 +753,37 @@ void handleLocalControlOwnerApi() {
                       "{\"result\":\"ok\",\"config_owner\":\"" + g_system_config.config_owner + "\"}");
 }
 
+void handleLocalProfileSaveForm() {
+  String error;
+  FermentationConfig candidate;
+  if (!buildLocalProfileCandidateFromForm(candidate, error) ||
+      !saveLocalFermentationConfig(candidate, "local_http_profile_save", error)) {
+    g_local_server.send(409, "text/html", localControlPage(error, true));
+    return;
+  }
+
+  g_local_server.send(200, "text/html", localControlPage("Local profile saved.", false));
+}
+
+void handleLocalProfileCommandForm() {
+  String error;
+  const String command = g_local_server.arg("command");
+  if (!applyLocalProfileCommand(command, error)) {
+    g_local_server.send(409, "text/html", localControlPage(error, true));
+    return;
+  }
+
+  g_local_server.send(200, "text/html", localControlPage(localProfileCommandSuccessMessage(command), false));
+}
+
 void beginLocalControlServer() {
   if (g_local_server_started) {
     return;
   }
   g_local_server.on("/", HTTP_GET, handleLocalControlRoot);
   g_local_server.on("/control-owner", HTTP_POST, handleLocalControlOwnerForm);
+  g_local_server.on("/profile/save", HTTP_POST, handleLocalProfileSaveForm);
+  g_local_server.on("/profile/command", HTTP_POST, handleLocalProfileCommandForm);
   g_local_server.on("/api/runtime/state", HTTP_GET, sendLocalRuntimeState);
   g_local_server.on("/api/control-owner", HTTP_POST, handleLocalControlOwnerApi);
   g_local_server.onNotFound([]() { g_local_server.send(404, "text/plain", "Not found"); });
