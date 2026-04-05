@@ -6,6 +6,7 @@
 
 namespace {
 Preferences g_preferences;
+constexpr size_t kMaxStoredProfileRuntimeBytes = 768;
 
 String chipSuffix() {
   const uint64_t chip_id = ESP.getEfuseMac();
@@ -179,6 +180,7 @@ SystemConfig defaultSystemConfig() {
 FermentationConfig defaultFermentationConfig(const String &device_id) {
   FermentationConfig config;
   config.device_id = device_id;
+  config.manual.output = "off";
   config.valid = false;
   return config;
 }
@@ -436,7 +438,7 @@ String serializeSystemConfig(const SystemConfig &config) {
 }
 
 bool parseFermentationConfigJson(const String &payload, FermentationConfig &config, String &error) {
-  DynamicJsonDocument doc(3072);
+  DynamicJsonDocument doc(4096);
   DeserializationError parse_error = deserializeJson(doc, payload);
   if (parse_error) {
     error = "fermentation_config JSON parse failed";
@@ -469,6 +471,26 @@ bool parseFermentationConfigJson(const String &payload, FermentationConfig &conf
   config.alarms.deviation_c = alarms["deviation_c"] | config.alarms.deviation_c;
   config.alarms.sensor_stale_s = alarms["sensor_stale_s"] | config.alarms.sensor_stale_s;
 
+  JsonObjectConst manual = root["manual"].as<JsonObjectConst>();
+  config.manual.output = String(manual["output"] | config.manual.output);
+
+  JsonObjectConst profile = root["profile"].as<JsonObjectConst>();
+  config.profile.id = String(profile["id"] | config.profile.id);
+  config.profile.step_count = 0;
+  JsonArrayConst steps = profile["steps"].as<JsonArrayConst>();
+  for (JsonObjectConst step : steps) {
+    if (config.profile.step_count >= kMaxProfileSteps) {
+      break;
+    }
+    ProfileStepConfig &entry = config.profile.steps[config.profile.step_count++];
+    entry.id = String(step["id"] | entry.id);
+    entry.label = String(step["label"] | entry.label);
+    entry.target_c = step["target_c"] | entry.target_c;
+    entry.hold_duration_s = step["hold_duration_s"] | entry.hold_duration_s;
+    entry.ramp_duration_s = step["ramp_duration_s"] | entry.ramp_duration_s;
+    entry.advance_policy = String(step["advance_policy"] | entry.advance_policy);
+  }
+
   return true;
 }
 
@@ -486,8 +508,8 @@ bool validateFermentationConfig(FermentationConfig &config, const String &expect
     error = "fermentation_config device_id does not match this device";
     return false;
   }
-  if (config.mode != "thermostat") {
-    error = "profile mode is not implemented in firmware_v2 yet";
+  if (config.mode != "thermostat" && config.mode != "profile" && config.mode != "manual") {
+    error = "fermentation_config mode must be thermostat, profile, or manual";
     return false;
   }
   if (config.thermostat.hysteresis_c < 0.1f || config.thermostat.hysteresis_c > 5.0f) {
@@ -504,6 +526,45 @@ bool validateFermentationConfig(FermentationConfig &config, const String &expect
   }
   if (config.alarms.sensor_stale_s < 5) {
     config.alarms.sensor_stale_s = 5;
+  }
+  if (config.mode == "manual") {
+    if (config.manual.output != "off" && config.manual.output != "heating" && config.manual.output != "cooling") {
+      error = "manual.output must be off, heating, or cooling";
+      return false;
+    }
+  } else {
+    config.manual.output = "off";
+  }
+  if (config.mode == "profile") {
+    if (config.profile.id.isEmpty()) {
+      error = "profile.id is required when mode is profile";
+      return false;
+    }
+    if (config.profile.step_count == 0 || config.profile.step_count > kMaxProfileSteps) {
+      error = "profile.steps must include 1-10 steps";
+      return false;
+    }
+    for (uint8_t index = 0; index < config.profile.step_count; ++index) {
+      const ProfileStepConfig &step = config.profile.steps[index];
+      if (step.id.isEmpty()) {
+        error = "profile.steps[].id is required";
+        return false;
+      }
+      if (step.target_c < -20.0f || step.target_c > 50.0f) {
+        error = "profile.steps[].target_c must be between -20 and 50";
+        return false;
+      }
+      if (step.hold_duration_s > 3596400UL || step.ramp_duration_s > 3596400UL) {
+        error = "profile step durations must be <= 3596400 seconds";
+        return false;
+      }
+      if (step.advance_policy != "auto" && step.advance_policy != "manual_release") {
+        error = "profile.steps[].advance_policy must be auto or manual_release";
+        return false;
+      }
+    }
+  } else {
+    config.profile = ProfileConfig();
   }
   config.valid = true;
   return true;
@@ -534,7 +595,112 @@ String serializeFermentationConfig(const FermentationConfig &config) {
   alarms["deviation_c"] = config.alarms.deviation_c;
   alarms["sensor_stale_s"] = config.alarms.sensor_stale_s;
 
+  if (config.mode == "manual") {
+    JsonObject manual = doc.createNestedObject("manual");
+    manual["output"] = config.manual.output;
+  }
+
+  if (config.mode == "profile") {
+    JsonObject profile = doc.createNestedObject("profile");
+    profile["id"] = config.profile.id;
+    JsonArray steps = profile.createNestedArray("steps");
+    for (uint8_t index = 0; index < config.profile.step_count; ++index) {
+      const ProfileStepConfig &step = config.profile.steps[index];
+      JsonObject entry = steps.createNestedObject();
+      entry["id"] = step.id;
+      if (!step.label.isEmpty()) {
+        entry["label"] = step.label;
+      }
+      entry["target_c"] = step.target_c;
+      entry["hold_duration_s"] = step.hold_duration_s;
+      if (step.ramp_duration_s > 0) {
+        entry["ramp_duration_s"] = step.ramp_duration_s;
+      }
+      entry["advance_policy"] = step.advance_policy;
+    }
+  }
+
   String output;
   serializeJson(doc, output);
   return output;
+}
+
+bool ConfigStore::loadProfileRuntime(uint32_t expected_config_version, ProfileRuntimeState &runtime) {
+  if (!begin()) {
+    return false;
+  }
+  const String payload = g_preferences.getString("profile_rt", "");
+  if (payload.isEmpty()) {
+    return false;
+  }
+
+  DynamicJsonDocument doc(1024);
+  if (deserializeJson(doc, payload) != DeserializationError::Ok) {
+    return false;
+  }
+
+  if ((doc["config_version"] | 0U) != expected_config_version) {
+    return false;
+  }
+
+  ProfileRuntimeState loaded;
+  loaded.active = doc["active"] | false;
+  loaded.active_profile_id = String(doc["active_profile_id"] | "");
+  loaded.active_step_id = String(doc["active_step_id"] | "");
+  loaded.active_step_index = doc["active_step_index"] | -1;
+  loaded.phase = String(doc["phase"] | "idle");
+  loaded.paused = doc["paused"] | false;
+  loaded.waiting_for_manual_release = doc["waiting_for_manual_release"] | false;
+  loaded.hold_timing_active = doc["hold_timing_active"] | false;
+  loaded.effective_target_c = doc["effective_target_c"] | 0.0f;
+  loaded.step_base_elapsed_s = doc["step_elapsed_s"] | 0UL;
+  loaded.hold_base_elapsed_s = doc["hold_elapsed_s"] | 0UL;
+  runtime = loaded;
+  return loaded.active;
+}
+
+bool ConfigStore::saveProfileRuntime(uint32_t config_version, const ProfileRuntimeState &runtime, uint32_t now_ms) {
+  if (!begin()) {
+    return false;
+  }
+
+  DynamicJsonDocument doc(1024);
+  doc["config_version"] = config_version;
+  doc["active"] = runtime.active;
+  doc["active_profile_id"] = runtime.active_profile_id;
+  doc["active_step_id"] = runtime.active_step_id;
+  doc["active_step_index"] = runtime.active_step_index;
+  doc["phase"] = runtime.phase;
+  doc["paused"] = runtime.paused;
+  doc["waiting_for_manual_release"] = runtime.waiting_for_manual_release;
+  doc["hold_timing_active"] = runtime.hold_timing_active;
+  doc["effective_target_c"] = runtime.effective_target_c;
+
+  const bool timers_running = !runtime.paused && runtime.phase != "faulted" && runtime.phase != "completed";
+  uint32_t step_elapsed_s = runtime.step_base_elapsed_s;
+  if (timers_running && runtime.step_started_ms != 0 && static_cast<int32_t>(now_ms - runtime.step_started_ms) >= 0) {
+    step_elapsed_s += (now_ms - runtime.step_started_ms) / 1000UL;
+  }
+  doc["step_elapsed_s"] = step_elapsed_s;
+
+  uint32_t hold_elapsed_s = runtime.hold_base_elapsed_s;
+  if (timers_running && runtime.step_hold_started_ms != 0 &&
+      static_cast<int32_t>(now_ms - runtime.step_hold_started_ms) >= 0) {
+    hold_elapsed_s += (now_ms - runtime.step_hold_started_ms) / 1000UL;
+  }
+  doc["hold_elapsed_s"] = hold_elapsed_s;
+
+  String payload;
+  const size_t serialized_length = serializeJson(doc, payload);
+  if (serialized_length == 0 || serialized_length > kMaxStoredProfileRuntimeBytes) {
+    return false;
+  }
+  return g_preferences.putString("profile_rt", payload) > 0;
+}
+
+bool ConfigStore::clearProfileRuntime() {
+  if (!begin()) {
+    return false;
+  }
+  return g_preferences.remove("profile_rt");
 }

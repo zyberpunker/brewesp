@@ -14,7 +14,8 @@ struct ControllerState {
 
 class ThermostatController {
  public:
-  const ControllerState &evaluate(const FermentationConfig &config, const SensorSnapshot &sensors, uint32_t now_ms);
+  const ControllerState &evaluate(const FermentationConfig &config, const ProfileRuntimeState &profile_runtime,
+                                  const SensorSnapshot &sensors, uint32_t now_ms);
   void apply(OutputDriver &heating, OutputDriver &cooling, uint32_t now_ms);
   const ControllerState &state() const;
 

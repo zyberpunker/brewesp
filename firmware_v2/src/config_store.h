@@ -11,6 +11,9 @@ class ConfigStore {
   bool saveSystemConfig(const SystemConfig &config);
   bool loadFermentationConfig(FermentationConfig &config);
   bool saveFermentationConfig(const FermentationConfig &config);
+  bool loadProfileRuntime(uint32_t expected_config_version, ProfileRuntimeState &runtime);
+  bool saveProfileRuntime(uint32_t config_version, const ProfileRuntimeState &runtime, uint32_t now_ms);
+  bool clearProfileRuntime();
 
  private:
   bool started_ = false;
