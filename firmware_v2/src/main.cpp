@@ -93,6 +93,10 @@ String selectedAttr(bool selected) {
   return selected ? " selected" : "";
 }
 
+String checkedAttr(bool checked) {
+  return checked ? " checked" : "";
+}
+
 String disabledAttr(bool disabled) {
   return disabled ? " disabled" : "";
 }
@@ -105,12 +109,11 @@ bool storedProfileAvailable() {
   return g_fermentation_config.profile.step_count > 0 && !g_fermentation_config.profile.id.isEmpty();
 }
 
-uint8_t localEditorStepCount() {
+bool localEditorStepEnabled(uint8_t index) {
   if (g_fermentation_config.profile.step_count == 0) {
-    return 1;
+    return index == 0;
   }
-  return g_fermentation_config.profile.step_count > kLocalProfileEditorMaxSteps ? kLocalProfileEditorMaxSteps
-                                                                                : g_fermentation_config.profile.step_count;
+  return index < g_fermentation_config.profile.step_count && index < kLocalProfileEditorMaxSteps;
 }
 
 String formatFloatInput(float value, uint8_t decimals = 2) {
@@ -331,7 +334,7 @@ void publishStateIfConnected() {
 
 bool saveLocalFermentationConfig(const FermentationConfig &candidate, const char *source, String &error) {
   if (!localConfigWritable()) {
-    error = "local profile editing requires config_owner=local";
+    error = "local config editing requires config_owner=local";
     return false;
   }
 
@@ -357,14 +360,45 @@ bool saveLocalFermentationConfig(const FermentationConfig &candidate, const char
   return true;
 }
 
-bool buildLocalProfileCandidateFromForm(FermentationConfig &candidate, String &error) {
-  uint32_t step_count = 0;
-  if (!parseStrictUint32(g_local_server.arg("step_count"), step_count) || step_count == 0 ||
-      step_count > kLocalProfileEditorMaxSteps) {
-    error = "step_count must be between 1 and 7";
+bool buildLocalThermostatCandidateFromForm(FermentationConfig &candidate, bool activate_mode, String &error) {
+  candidate = g_fermentation_config;
+  candidate.schema_version = 2;
+  candidate.device_id = g_system_config.device_id;
+  candidate.version = nextLocalConfigVersion();
+
+  if (!parseStrictFloat(g_local_server.arg("thermostat_setpoint_c"), candidate.thermostat.setpoint_c)) {
+    error = "thermostat setpoint must be a number";
+    return false;
+  }
+  if (candidate.thermostat.setpoint_c < -20.0f || candidate.thermostat.setpoint_c > 50.0f) {
+    error = "thermostat setpoint must be between -20 and 50 C";
+    return false;
+  }
+  if (!parseStrictFloat(g_local_server.arg("thermostat_hysteresis_c"), candidate.thermostat.hysteresis_c)) {
+    error = "thermostat hysteresis must be a number";
+    return false;
+  }
+  if (!parseStrictUint32(g_local_server.arg("thermostat_cooling_delay_s"), candidate.thermostat.cooling_delay_s)) {
+    error = "cooling delay must be an integer number of seconds";
+    return false;
+  }
+  if (!parseStrictUint32(g_local_server.arg("thermostat_heating_delay_s"), candidate.thermostat.heating_delay_s)) {
+    error = "heating delay must be an integer number of seconds";
+    return false;
+  }
+  if (candidate.thermostat.cooling_delay_s > 3600 || candidate.thermostat.heating_delay_s > 3600) {
+    error = "thermostat delays must be <= 3600 seconds";
     return false;
   }
 
+  if (activate_mode) {
+    candidate.mode = "thermostat";
+  }
+
+  return validateFermentationConfig(candidate, g_system_config.device_id, error);
+}
+
+bool buildLocalProfileCandidateFromForm(FermentationConfig &candidate, String &error) {
   candidate = g_fermentation_config;
   candidate.schema_version = 2;
   candidate.device_id = g_system_config.device_id;
@@ -391,11 +425,19 @@ bool buildLocalProfileCandidateFromForm(FermentationConfig &candidate, String &e
 
   candidate.profile = ProfileConfig();
   candidate.profile.id = slugifyIdentifier(profile_id, "local-profile");
-  candidate.profile.step_count = static_cast<uint8_t>(step_count);
 
-  for (uint8_t index = 0; index < candidate.profile.step_count; ++index) {
+  for (uint8_t index = 0; index < kLocalProfileEditorMaxSteps; ++index) {
     const String prefix = "step_" + String(index + 1) + "_";
-    ProfileStepConfig &step = candidate.profile.steps[index];
+    if (!g_local_server.hasArg(prefix + "enabled")) {
+      continue;
+    }
+
+    if (candidate.profile.step_count >= kLocalProfileEditorMaxSteps) {
+      error = "no more than 7 steps can be active";
+      return false;
+    }
+
+    ProfileStepConfig &step = candidate.profile.steps[candidate.profile.step_count++];
 
     String label = g_local_server.arg(prefix + "label");
     label.trim();
@@ -426,6 +468,11 @@ bool buildLocalProfileCandidateFromForm(FermentationConfig &candidate, String &e
       error = "Step " + String(index + 1) + " advance policy must be auto or manual_release";
       return false;
     }
+  }
+
+  if (candidate.profile.step_count == 0) {
+    error = "select at least one active step";
+    return false;
   }
 
   return validateFermentationConfig(candidate, g_system_config.device_id, error);
@@ -506,7 +553,9 @@ String localControlPage(const String &message, bool is_error) {
   const bool can_resume = writable && runtime_active && g_profile_runtime.state().paused;
   const bool can_release = writable && runtime_active && g_profile_runtime.state().waiting_for_manual_release;
   const bool can_stop = writable && g_fermentation_config.mode == "profile";
-  const uint8_t visible_steps = localEditorStepCount();
+  const DriverStatus heating = g_heating_output ? g_heating_output->status() : DriverStatus();
+  const DriverStatus cooling = g_cooling_output ? g_cooling_output->status() : DriverStatus();
+  const ControllerState &controller = g_controller.state();
 
   String page;
   page.reserve(16384);
@@ -516,9 +565,10 @@ String localControlPage(const String &message, bool is_error) {
   page += "section{background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 4px 14px rgba(0,0,0,.08);}h1,h2,h3{margin:0 0 12px;}p{margin:0 0 10px;line-height:1.45;}";
   page += ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;}.card{background:#f9f6f0;border:1px solid #e3ddd2;border-radius:10px;padding:12px;}";
   page += "label{display:block;font-weight:600;margin:10px 0 6px;}input,select{width:100%;padding:10px;border:1px solid #c9ced3;border-radius:8px;box-sizing:border-box;background:#fff;}";
+  page += "input[type='checkbox']{width:auto;padding:0;margin:0;accent-color:#1f6b75;}";
   page += "button{background:#1f6b75;color:#fff;border:0;padding:12px 18px;border-radius:8px;font-weight:700;cursor:pointer;}button[disabled],input[disabled],select[disabled]{opacity:.55;cursor:not-allowed;}";
   page += ".button-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;}.banner{padding:12px 14px;border-radius:8px;margin-bottom:16px;}.banner.ok{background:#dfeee8;border-left:4px solid #1f6b75;}.banner.error{background:#f9e2de;border-left:4px solid #a6432b;}";
-  page += ".meta{color:#55636d;}.step-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}.step{border:1px solid #d8d2c8;border-radius:12px;padding:14px;background:#fbfaf7;}.step.inactive{opacity:.78;}.help{font-size:.95rem;color:#55636d;}";
+  page += ".meta{color:#55636d;}.step-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}.step{border:1px solid #d8d2c8;border-radius:12px;padding:14px;background:#fbfaf7;}.step.inactive{opacity:.55;}.help{font-size:.95rem;color:#55636d;}.step-toggle{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-weight:700;}";
   page += "</style></head><body><main><section><h1>Local Control</h1>";
   if (!message.isEmpty()) {
     page += "<div class='banner " + String(is_error ? "error" : "ok") + "'>" + htmlEscape(message) + "</div>";
@@ -530,6 +580,19 @@ String localControlPage(const String &message, bool is_error) {
           "<br>Current mode: " + htmlEscape(g_fermentation_config.mode) +
           "<br>Stored profile steps: " + String(g_fermentation_config.profile.step_count) +
           "<br>Active config version: " + String(g_fermentation_config.version) + "</p></section>";
+
+  page += "<section><h2>Runtime Status</h2><div class='grid'>";
+  page += "<div class='card'><strong>Outputs</strong><p class='meta'>Heater: " + htmlEscape(outputStateString(heating)) +
+          "<br>Heater detail: " + htmlEscape(heating.description.isEmpty() ? String("n/a") : heating.description) +
+          "<br>Cooler: " + htmlEscape(outputStateString(cooling)) +
+          "<br>Cooler detail: " + htmlEscape(cooling.description.isEmpty() ? String("n/a") : cooling.description) +
+          "</p></div>";
+  page += "<div class='card'><strong>Controller</strong><p class='meta'>State: " + htmlEscape(controller.controller_state) +
+          "<br>Reason: " + htmlEscape(controller.controller_reason);
+  if (!controller.fault.isEmpty()) {
+    page += "<br>Fault: " + htmlEscape(controller.fault);
+  }
+  page += "</p></div></div></section>";
 
   page += "<section><h2>Config Owner</h2><p class='help'>Profile editing and local run commands are only writable while ownership is <code>local</code>.</p>";
   page += "<form method='post' action='/control-owner'><label>Config owner</label>";
@@ -562,6 +625,22 @@ String localControlPage(const String &message, bool is_error) {
   page += "<button type='submit' name='command' value='profile_stop'" + disabledAttr(!can_stop) + ">Stop</button>";
   page += "</div></form></section>";
 
+  page += "<section><h2>Thermostat</h2>";
+  page += "<p class='help'>Save thermostat settings locally. Use the second button to switch the controller back to thermostat mode.</p>";
+  page += "<form method='post' action='/thermostat/save'><div class='grid'>";
+  page += "<div><label>Setpoint (C)</label><input name='thermostat_setpoint_c' type='number' step='0.1' value='" +
+          htmlEscape(formatFloatInput(g_fermentation_config.thermostat.setpoint_c, 2)) + "'" + disabledAttr(!writable) + "></div>";
+  page += "<div><label>Hysteresis (C)</label><input name='thermostat_hysteresis_c' type='number' min='0.1' max='5' step='0.1' value='" +
+          htmlEscape(formatFloatInput(g_fermentation_config.thermostat.hysteresis_c, 2)) + "'" + disabledAttr(!writable) + "></div>";
+  page += "<div><label>Cooling delay (s)</label><input name='thermostat_cooling_delay_s' type='number' min='0' max='3600' step='1' value='" +
+          String(g_fermentation_config.thermostat.cooling_delay_s) + "'" + disabledAttr(!writable) + "></div>";
+  page += "<div><label>Heating delay (s)</label><input name='thermostat_heating_delay_s' type='number' min='0' max='3600' step='1' value='" +
+          String(g_fermentation_config.thermostat.heating_delay_s) + "'" + disabledAttr(!writable) + "></div>";
+  page += "</div><div class='button-row'>";
+  page += "<button type='submit' name='action' value='save'" + disabledAttr(!writable) + ">Save thermostat settings</button>";
+  page += "<button type='submit' name='action' value='activate'" + disabledAttr(!writable) + ">Save and switch to thermostat</button>";
+  page += "</div></form></section>";
+
   page += "<section><h2>Profile Editor</h2>";
   if (!writable) {
     page += "<div class='banner error'>Switch ownership to <code>local</code> before saving or running a profile from the ESP.</div>";
@@ -569,7 +648,7 @@ String localControlPage(const String &message, bool is_error) {
   if (profile_too_large) {
     page += "<div class='banner error'>The stored profile currently has more than 7 steps. This local editor shows the first 7 and saving will replace the stored profile with up to 7 steps.</div>";
   }
-  page += "<p class='help'>This is a fallback editor, not the full web profile manager. Enter the number of active steps and the device will save only those first steps.</p>";
+  page += "<p class='help'>This is a fallback editor, not the full web profile manager. Check <code>Active</code> on the steps you want to save; unchecked steps are ignored.</p>";
   page += "<form method='post' action='/profile/save'>";
   page += "<div class='grid'>";
   page += "<div><label>Profile name</label><input name='name' value='" +
@@ -577,12 +656,7 @@ String localControlPage(const String &message, bool is_error) {
           disabledAttr(!writable) + "></div>";
   page += "<div><label>Profile id</label><input name='profile_id' value='" +
           htmlEscape(g_fermentation_config.profile.id.isEmpty() ? String("local-profile") : g_fermentation_config.profile.id) + "'" +
-          disabledAttr(!writable) + "></div>";
-  page += "<div><label>Active steps</label><select name='step_count'" + disabledAttr(!writable) + ">";
-  for (uint8_t count = 1; count <= kLocalProfileEditorMaxSteps; ++count) {
-    page += "<option value='" + String(count) + "'" + selectedAttr(count == visible_steps) + ">" + String(count) + "</option>";
-  }
-  page += "</select></div></div>";
+          disabledAttr(!writable) + "></div></div>";
   page += "<div class='step-grid'>";
   for (uint8_t index = 0; index < kLocalProfileEditorMaxSteps; ++index) {
     ProfileStepConfig step;
@@ -593,8 +667,10 @@ String localControlPage(const String &message, bool is_error) {
       step.target_c = index == 0 ? g_fermentation_config.thermostat.setpoint_c : 20.0f;
     }
     const String prefix = "step_" + String(index + 1) + "_";
-    const bool active = index < visible_steps;
+    const bool active = localEditorStepEnabled(index);
     page += "<div class='step" + String(active ? "" : " inactive") + "'><h3>Step " + String(index + 1) + "</h3>";
+    page += "<label class='step-toggle'><input type='checkbox' name='" + prefix + "enabled' value='1'" +
+            checkedAttr(active) + disabledAttr(!writable) + ">Active</label>";
     page += "<label>Label</label><input name='" + prefix + "label' value='" + htmlEscape(step.label) + "'" +
             disabledAttr(!writable) + ">";
     page += "<label>Target temperature (C)</label><input name='" + prefix + "target_c' type='number' step='0.1' value='" +
@@ -624,6 +700,11 @@ void sendLocalRuntimeState() {
   doc["mode"] = g_fermentation_config.valid ? g_fermentation_config.mode : "thermostat";
   doc["active_config_version"] = g_fermentation_config.version;
   doc["name"] = g_fermentation_config.name;
+  JsonObject thermostat = doc.createNestedObject("thermostat");
+  thermostat["setpoint_c"] = g_fermentation_config.thermostat.setpoint_c;
+  thermostat["hysteresis_c"] = g_fermentation_config.thermostat.hysteresis_c;
+  thermostat["cooling_delay_s"] = g_fermentation_config.thermostat.cooling_delay_s;
+  thermostat["heating_delay_s"] = g_fermentation_config.thermostat.heating_delay_s;
   doc["local_profile_editor_max_steps"] = kLocalProfileEditorMaxSteps;
   doc["stored_profile_available"] = storedProfileAvailable();
   doc["stored_profile_step_count"] = g_fermentation_config.profile.step_count;
@@ -765,6 +846,23 @@ void handleLocalProfileSaveForm() {
   g_local_server.send(200, "text/html", localControlPage("Local profile saved.", false));
 }
 
+void handleLocalThermostatSaveForm() {
+  String error;
+  FermentationConfig candidate;
+  const bool activate_mode = g_local_server.arg("action") == "activate";
+  if (!buildLocalThermostatCandidateFromForm(candidate, activate_mode, error) ||
+      !saveLocalFermentationConfig(candidate, activate_mode ? "local_http_thermostat_activate" : "local_http_thermostat_save",
+                                   error)) {
+    g_local_server.send(409, "text/html", localControlPage(error, true));
+    return;
+  }
+
+  g_local_server.send(200, "text/html",
+                      localControlPage(activate_mode ? "Thermostat settings saved and thermostat mode activated."
+                                                     : "Thermostat settings saved.",
+                                       false));
+}
+
 void handleLocalProfileCommandForm() {
   String error;
   const String command = g_local_server.arg("command");
@@ -782,6 +880,7 @@ void beginLocalControlServer() {
   }
   g_local_server.on("/", HTTP_GET, handleLocalControlRoot);
   g_local_server.on("/control-owner", HTTP_POST, handleLocalControlOwnerForm);
+  g_local_server.on("/thermostat/save", HTTP_POST, handleLocalThermostatSaveForm);
   g_local_server.on("/profile/save", HTTP_POST, handleLocalProfileSaveForm);
   g_local_server.on("/profile/command", HTTP_POST, handleLocalProfileCommandForm);
   g_local_server.on("/api/runtime/state", HTTP_GET, sendLocalRuntimeState);

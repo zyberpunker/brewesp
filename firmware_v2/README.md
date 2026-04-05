@@ -35,7 +35,8 @@ Current ownership behavior:
 
 Current local owner endpoints in normal operation:
 
-- `GET /` local owner page plus fallback profile editor/runtime controls
+- `GET /` local owner page plus fallback thermostat/profile controls
+- `POST /thermostat/save` save thermostat settings locally and optionally switch mode to `thermostat`
 - `POST /profile/save` save one local profile with up to 7 steps
 - `POST /profile/command` local `profile_start`, `profile_pause`, `profile_resume`, `profile_release_hold`, or `profile_stop`
 - `GET /api/runtime/state` current owner/runtime summary plus stored profile data
@@ -45,9 +46,15 @@ Current local profile-editor behavior:
 
 - writable only when `config_owner=local`
 - saves one stored profile with up to 7 locally editable steps
+- each visible step has an `Active` checkbox; unchecked steps are ignored on save
 - step durations are entered as hours in the fallback form and serialized as seconds in `fermentation_config`
 - `profile_start` switches the active mode to `profile` and restarts from step 1
 - `profile_stop` returns to `thermostat` while keeping the stored profile saved locally
+
+Current local thermostat behavior:
+
+- thermostat setpoint, hysteresis, and output delays can be saved locally from the same fallback page
+- thermostat settings can be saved without changing mode, or saved while switching the active mode back to `thermostat`
 
 Initial build commands:
 
