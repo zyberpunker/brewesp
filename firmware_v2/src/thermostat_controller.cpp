@@ -8,6 +8,32 @@ const ProbeReading *selectControlProbe(const FermentationConfig &config, const S
   return &sensors.beer;
 }
 
+bool validateControlProbe(const FermentationConfig &config, const SensorSnapshot &sensors, ControllerState &state,
+                          const ProbeReading *&control_probe) {
+  control_probe = selectControlProbe(config, sensors);
+  const bool using_secondary = control_probe == &sensors.chamber;
+  const String control_name = using_secondary ? "chamber" : "beer";
+  if (!control_probe->present) {
+    state.fault = control_name + " sensor missing";
+    state.controller_reason = "control sensor missing";
+    state.controller_state = "fault";
+    return false;
+  }
+  if (!control_probe->valid) {
+    state.fault = control_name + " sensor invalid";
+    state.controller_reason = "control sensor invalid";
+    state.controller_state = "fault";
+    return false;
+  }
+  if (control_probe->stale) {
+    state.fault = control_name + " sensor stale";
+    state.controller_reason = "control sensor stale";
+    state.controller_state = "fault";
+    return false;
+  }
+  return true;
+}
+
 float effectiveSetpointC(const FermentationConfig &config, const ProfileRuntimeState &profile_runtime) {
   if (config.mode == "profile" && profile_runtime.active) {
     return profile_runtime.effective_target_c;
@@ -19,22 +45,38 @@ float effectiveSetpointC(const FermentationConfig &config, const ProfileRuntimeS
 const ControllerState &ThermostatController::evaluate(const FermentationConfig &config,
                                                       const ProfileRuntimeState &profile_runtime,
                                                       const SensorSnapshot &sensors, uint32_t now_ms) {
-  (void)now_ms;
   state_ = ControllerState();
 
   if (!config.valid) {
     state_.controller_reason = "no active config";
     return state_;
   }
+
+  const ProbeReading *control_probe = nullptr;
   if (config.mode == "manual") {
+    if (!validateControlProbe(config, sensors, state_, control_probe)) {
+      return state_;
+    }
+
     state_.automatic_control_active = false;
-    state_.controller_reason = "manual output selection";
     if (config.manual.output == "heating") {
-      state_.heating_command = true;
-      state_.controller_state = "heating";
+      if ((now_ms - heating_last_off_ms_) >= config.thermostat.heating_delay_s * 1000UL) {
+        state_.heating_command = true;
+        state_.controller_state = "heating";
+        state_.controller_reason = "manual heating selected";
+      } else {
+        state_.controller_reason = "manual heating delay active";
+      }
     } else if (config.manual.output == "cooling") {
-      state_.cooling_command = true;
-      state_.controller_state = "cooling";
+      if ((now_ms - cooling_last_off_ms_) >= config.thermostat.cooling_delay_s * 1000UL) {
+        state_.cooling_command = true;
+        state_.controller_state = "cooling";
+        state_.controller_reason = "manual cooling selected";
+      } else {
+        state_.controller_reason = "manual cooling delay active";
+      }
+    } else {
+      state_.controller_reason = "manual output off";
     }
     return state_;
   }
@@ -51,25 +93,7 @@ const ControllerState &ThermostatController::evaluate(const FermentationConfig &
     return state_;
   }
 
-  const ProbeReading *control_probe = selectControlProbe(config, sensors);
-  const bool using_secondary = control_probe == &sensors.chamber;
-  const String control_name = using_secondary ? "chamber" : "beer";
-  if (!control_probe->present) {
-    state_.fault = control_name + " sensor missing";
-    state_.controller_reason = "control sensor missing";
-    state_.controller_state = "fault";
-    return state_;
-  }
-  if (!control_probe->valid) {
-    state_.fault = control_name + " sensor invalid";
-    state_.controller_reason = "control sensor invalid";
-    state_.controller_state = "fault";
-    return state_;
-  }
-  if (control_probe->stale) {
-    state_.fault = control_name + " sensor stale";
-    state_.controller_reason = "control sensor stale";
-    state_.controller_state = "fault";
+  if (!validateControlProbe(config, sensors, state_, control_probe)) {
     return state_;
   }
 

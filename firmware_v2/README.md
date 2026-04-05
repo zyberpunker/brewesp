@@ -12,7 +12,7 @@ Current scope in this rewrite:
 - explicit `config_owner` in `system_config` with `local` or `external` runtime ownership
 - recovery AP with onboarding page for Wi-Fi and MQTT bootstrap
 - minimal local HTTP control-owner page/API in normal operation for live owner switching without reboot
-- local HTTP fallback page for editing and running one stored profile directly on the ESP
+- local HTTP fallback page for status, manual control, thermostat edits, and one stored profile directly on the ESP
 - cached `fermentation_config` persisted in NVS
 - local `manual`, `thermostat`, and `profile` fermentation modes
 - local profile runtime persisted in NVS for reboot recovery
@@ -36,11 +36,13 @@ Current ownership behavior:
 Current local owner endpoints in normal operation:
 
 - `GET /` local owner page plus fallback thermostat/profile controls
+- `POST /manual-output` save local `manual` mode with `off`, `heating`, or `cooling`
 - `POST /thermostat/save` save thermostat settings locally and optionally switch mode to `thermostat`
 - `POST /profile/save` save one local profile with up to 7 steps
 - `POST /profile/command` local `profile_start`, `profile_pause`, `profile_resume`, `profile_release_hold`, or `profile_stop`
-- `GET /api/runtime/state` current owner/runtime summary plus stored profile data
+- `GET /api/runtime/state` current owner/runtime summary plus sensors, outputs, fault, uptime, Wi-Fi/MQTT, and stored profile data
 - `POST /api/control-owner` JSON body `{"owner":"local"}` or `{"owner":"external"}`
+- `POST /api/manual-output` JSON body `{"output":"heating"}`, `{"output":"cooling"}`, or `{"output":"off"}`
 
 Current local profile-editor behavior:
 
@@ -55,6 +57,13 @@ Current local thermostat behavior:
 
 - thermostat setpoint, hysteresis, and output delays can be saved locally from the same fallback page
 - thermostat settings can be saved without changing mode, or saved while switching the active mode back to `thermostat`
+
+Current local manual behavior:
+
+- manual output can be switched locally between `off`, `heating`, and `cooling`
+- saving manual output stores `mode=manual` in the local cached `fermentation_config`
+- control-sensor faults still force outputs off while in manual mode
+- manual mode reuses the configured heating/cooling output delays instead of bypassing them
 
 Initial build commands:
 
