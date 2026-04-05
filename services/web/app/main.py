@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, desc, select
+from sqlalchemy import delete, desc, select, text
 from sqlalchemy.orm import selectinload
 
 from .config import settings
@@ -917,8 +917,15 @@ def _delete_device_records(session, device: Device) -> None:
         delete(DeviceFermentationConfig).where(DeviceFermentationConfig.device_id == device.id)
     )
     session.execute(delete(DeviceOutputAssignment).where(DeviceOutputAssignment.device_id == device.id))
+    # Legacy rows may still exist even though the current app no longer maps this table.
+    session.execute(
+        text("DELETE FROM device_system_configs WHERE device_id = :device_id"),
+        {"device_id": device.id},
+    )
     session.execute(delete(DiscoveredRelay).where(DiscoveredRelay.source_device_id == device.id))
-    session.delete(device)
+    # Delete the parent row with a bulk statement as well so SQLAlchemy does not
+    # try to flush unloaded child relationships during ORM delete.
+    session.execute(delete(Device).where(Device.id == device.id))
 
 
 OUTPUT_COMMAND_MAP = {
