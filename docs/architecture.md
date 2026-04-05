@@ -221,6 +221,8 @@ Use this split:
 - ESP32 owns actual runtime state and safe relay behavior
 - Web service owns UI workflows and long-term history
 - MQTT is the integration bus, not the source of truth for physical safety
+- `system_config.config_owner` selects who may write drift configuration at runtime:
+  `local` on the ESP32 itself or `external` over MQTT
 
 This matters because the ESP32 must keep operating safely even if:
 
@@ -237,7 +239,7 @@ The device should support three operating states.
 
 - uses saved `system_config`
 - joins configured Wi-Fi network
-- connects to MQTT
+- connects to MQTT when `config_owner=external` and MQTT bootstrap settings are present
 - runs control logic normally
 
 ### `onboarding`
