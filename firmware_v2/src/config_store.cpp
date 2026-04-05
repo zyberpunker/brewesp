@@ -551,9 +551,10 @@ bool validateFermentationConfig(FermentationConfig &config, const String &expect
   } else {
     config.manual.output = "off";
   }
-  if (config.mode == "profile") {
+  const bool profile_present = !config.profile.id.isEmpty() || config.profile.step_count > 0;
+  if (config.mode == "profile" || profile_present) {
     if (config.profile.id.isEmpty()) {
-      error = "profile.id is required when mode is profile";
+      error = "profile.id is required when profile is present";
       return false;
     }
     if (config.profile.step_count == 0 || config.profile.step_count > kMaxProfileSteps) {
@@ -616,7 +617,7 @@ String serializeFermentationConfig(const FermentationConfig &config) {
     manual["output"] = config.manual.output;
   }
 
-  if (config.mode == "profile") {
+  if (config.profile.step_count > 0 && !config.profile.id.isEmpty()) {
     JsonObject profile = doc.createNestedObject("profile");
     profile["id"] = config.profile.id;
     JsonArray steps = profile.createNestedArray("steps");

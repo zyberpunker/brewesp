@@ -12,6 +12,7 @@ Current scope in this rewrite:
 - explicit `config_owner` in `system_config` with `local` or `external` runtime ownership
 - recovery AP with onboarding page for Wi-Fi and MQTT bootstrap
 - minimal local HTTP control-owner page/API in normal operation for live owner switching without reboot
+- local HTTP fallback page for editing and running one stored profile directly on the ESP
 - cached `fermentation_config` persisted in NVS
 - local `manual`, `thermostat`, and `profile` fermentation modes
 - local profile runtime persisted in NVS for reboot recovery
@@ -34,9 +35,26 @@ Current ownership behavior:
 
 Current local owner endpoints in normal operation:
 
-- `GET /` simple owner toggle page
-- `GET /api/runtime/state` current owner/runtime summary
+- `GET /` local owner page plus fallback thermostat/profile controls
+- `POST /thermostat/save` save thermostat settings locally and optionally switch mode to `thermostat`
+- `POST /profile/save` save one local profile with up to 7 steps
+- `POST /profile/command` local `profile_start`, `profile_pause`, `profile_resume`, `profile_release_hold`, or `profile_stop`
+- `GET /api/runtime/state` current owner/runtime summary plus stored profile data
 - `POST /api/control-owner` JSON body `{"owner":"local"}` or `{"owner":"external"}`
+
+Current local profile-editor behavior:
+
+- writable only when `config_owner=local`
+- saves one stored profile with up to 7 locally editable steps
+- each visible step has an `Active` checkbox; unchecked steps are ignored on save
+- step durations are entered as hours in the fallback form and serialized as seconds in `fermentation_config`
+- `profile_start` switches the active mode to `profile` and restarts from step 1
+- `profile_stop` returns to `thermostat` while keeping the stored profile saved locally
+
+Current local thermostat behavior:
+
+- thermostat setpoint, hysteresis, and output delays can be saved locally from the same fallback page
+- thermostat settings can be saved without changing mode, or saved while switching the active mode back to `thermostat`
 
 Initial build commands:
 

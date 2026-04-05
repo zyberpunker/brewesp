@@ -527,6 +527,9 @@ Wire-unit rule:
 - when `mode == "manual"`, the payload must include a `manual` block with
   `output: "off" | "heating" | "cooling"`
 - when `mode == "profile"`, the payload must include a `profile` block
+- the payload may still include a valid `profile` block while `mode` is
+  `thermostat` or `manual`; firmware should preserve it so a local start action
+  can reuse the stored profile later
 
 Current implementation note:
 

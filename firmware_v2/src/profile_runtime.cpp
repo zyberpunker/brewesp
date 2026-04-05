@@ -2,6 +2,10 @@
 
 namespace {
 constexpr uint32_t kProfileRuntimePersistIntervalMs = 300000UL;
+
+uint32_t nextConfigVersion(uint32_t current) {
+  return current == 0 ? 1 : current + 1;
+}
 }
 
 bool ProfileRuntimeManager::syncToConfig(const FermentationConfig &config, ConfigStore &store, uint32_t now_ms) {
@@ -147,6 +151,7 @@ bool ProfileRuntimeManager::handleCommand(FermentationConfig &config, const Stri
     const FermentationConfig previous = config;
     const float fallback_setpoint_c = effectiveTargetC(config);
     config.mode = "thermostat";
+    config.version = nextConfigVersion(config.version);
     config.thermostat.setpoint_c = fallback_setpoint_c;
     if (!store.saveFermentationConfig(config)) {
       config = previous;
