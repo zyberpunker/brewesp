@@ -105,6 +105,43 @@ struct AlarmConfig {
   uint32_t sensor_stale_s = 30;
 };
 
+constexpr uint8_t kMaxProfileSteps = 10;
+
+struct ManualModeConfig {
+  String output = "off";
+};
+
+struct ProfileStepConfig {
+  String id;
+  String label;
+  float target_c = 20.0f;
+  uint32_t hold_duration_s = 0;
+  uint32_t ramp_duration_s = 0;
+  String advance_policy = "auto";
+};
+
+struct ProfileConfig {
+  String id;
+  uint8_t step_count = 0;
+  ProfileStepConfig steps[kMaxProfileSteps];
+};
+
+struct ProfileRuntimeState {
+  bool active = false;
+  String active_profile_id;
+  String active_step_id;
+  int active_step_index = -1;
+  String phase = "idle";
+  bool paused = false;
+  bool waiting_for_manual_release = false;
+  bool hold_timing_active = false;
+  float effective_target_c = 0.0f;
+  uint32_t step_started_ms = 0;
+  uint32_t step_hold_started_ms = 0;
+  uint32_t step_base_elapsed_s = 0;
+  uint32_t hold_base_elapsed_s = 0;
+};
+
 struct FermentationConfig {
   int schema_version = 2;
   uint32_t version = 0;
@@ -114,6 +151,8 @@ struct FermentationConfig {
   ThermostatConfig thermostat;
   SensorControlConfig sensors;
   AlarmConfig alarms;
+  ManualModeConfig manual;
+  ProfileConfig profile;
   bool valid = false;
 };
 

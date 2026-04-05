@@ -9,6 +9,7 @@
 
 #include "config_store.h"
 #include "output_factory.h"
+#include "profile_runtime.h"
 #include "provisioning_server.h"
 #include "sensor_manager.h"
 #include "thermostat_controller.h"
@@ -27,6 +28,7 @@ ConfigStore g_store;
 ProvisioningServer g_provisioning;
 SensorManager g_sensors;
 ThermostatController g_controller;
+ProfileRuntimeManager g_profile_runtime;
 SystemConfig g_system_config = defaultSystemConfig();
 FermentationConfig g_fermentation_config = defaultFermentationConfig(g_system_config.device_id);
 std::unique_ptr<OutputDriver> g_heating_output;
@@ -47,6 +49,9 @@ bool g_system_patch_pending_reboot = false;
 bool g_output_command_pending = false;
 String g_pending_output_target;
 String g_pending_output_state;
+bool g_profile_command_pending = false;
+String g_pending_profile_command;
+String g_pending_profile_step_id;
 
 void publishState();
 
@@ -60,6 +65,10 @@ String topicName(const char *suffix) {
 
 bool systemConfigChanged(const SystemConfig &current, const SystemConfig &updated) {
   return serializeSystemConfig(current) != serializeSystemConfig(updated);
+}
+
+bool fermentationConfigChanged(const FermentationConfig &current, const FermentationConfig &updated) {
+  return serializeFermentationConfig(current) != serializeFermentationConfig(updated);
 }
 
 time_t currentUnixTime() {
@@ -91,6 +100,26 @@ void rebuildOutputs() {
     g_cooling_output->begin();
   }
   g_state_dirty = true;
+}
+
+float publishedSetpointC() {
+  if (!g_fermentation_config.valid) {
+    return g_fermentation_config.thermostat.setpoint_c;
+  }
+  if (g_fermentation_config.mode == "profile" && g_profile_runtime.active()) {
+    return g_profile_runtime.activeStepTargetC(g_fermentation_config);
+  }
+  return g_fermentation_config.thermostat.setpoint_c;
+}
+
+bool controlSensorOperational(const SensorSnapshot &snapshot, const FermentationConfig &config) {
+  const ProbeReading &probe =
+      (config.sensors.control_sensor == "secondary" && config.sensors.secondary_enabled) ? snapshot.chamber : snapshot.beer;
+  return probe.present && probe.valid && !probe.stale;
+}
+
+void syncProfileRuntime() {
+  g_profile_runtime.syncToConfig(g_fermentation_config, g_store, millis());
 }
 
 void ensureOutputs() {
@@ -240,7 +269,7 @@ void publishTelemetry() {
     doc["temp_secondary_c"] = snapshot.chamber.adjusted_c;
   }
   if (g_fermentation_config.valid) {
-    doc["setpoint_c"] = g_fermentation_config.thermostat.setpoint_c;
+    doc["setpoint_c"] = publishedSetpointC();
   }
   doc["mode"] = g_fermentation_config.valid ? g_fermentation_config.mode : "thermostat";
   doc["controller_state"] = controller.controller_state;
@@ -259,6 +288,11 @@ void publishTelemetry() {
   doc["chamber_probe_rom"] = snapshot.chamber.rom;
   doc["heating"] = g_heating_output->status().on;
   doc["cooling"] = g_cooling_output->status().on;
+  if (g_fermentation_config.mode == "profile" && g_profile_runtime.active()) {
+    doc["profile_id"] = g_profile_runtime.state().active_profile_id;
+    doc["profile_step_id"] = g_profile_runtime.state().active_step_id;
+    doc["effective_target_c"] = g_profile_runtime.effectiveTargetC(g_fermentation_config);
+  }
   if (controller.fault.isEmpty()) {
     doc["fault"] = nullptr;
   } else {
@@ -281,7 +315,7 @@ void publishState() {
   doc["ui"] = "headless";
   doc["mode"] = g_fermentation_config.valid ? g_fermentation_config.mode : "thermostat";
   if (g_fermentation_config.valid) {
-    doc["setpoint_c"] = g_fermentation_config.thermostat.setpoint_c;
+    doc["setpoint_c"] = publishedSetpointC();
     doc["hysteresis_c"] = g_fermentation_config.thermostat.hysteresis_c;
     doc["cooling_delay_s"] = g_fermentation_config.thermostat.cooling_delay_s;
     doc["heating_delay_s"] = g_fermentation_config.thermostat.heating_delay_s;
@@ -310,6 +344,22 @@ void publishState() {
   doc["chamber_probe_valid"] = snapshot.chamber.valid;
   doc["chamber_probe_stale"] = snapshot.chamber.stale;
   doc["chamber_probe_rom"] = snapshot.chamber.rom;
+  if (g_fermentation_config.mode == "profile" && g_profile_runtime.active()) {
+    JsonObject runtime = doc.createNestedObject("profile_runtime");
+    runtime["active_profile_id"] = g_profile_runtime.state().active_profile_id;
+    runtime["active_step_id"] = g_profile_runtime.state().active_step_id;
+    runtime["active_step_index"] = g_profile_runtime.state().active_step_index;
+    runtime["phase"] = g_profile_runtime.state().phase;
+    runtime["step_started_at"] = g_profile_runtime.stepStartedAtSeconds(millis());
+    if (g_profile_runtime.hasStepHoldStarted()) {
+      runtime["step_hold_started_at"] = g_profile_runtime.stepHoldStartedAtSeconds(millis());
+    } else {
+      runtime["step_hold_started_at"] = nullptr;
+    }
+    runtime["effective_target_c"] = g_profile_runtime.effectiveTargetC(g_fermentation_config);
+    runtime["waiting_for_manual_release"] = g_profile_runtime.state().waiting_for_manual_release;
+    runtime["paused"] = g_profile_runtime.state().paused;
+  }
   if (controller.fault.isEmpty()) {
     doc["fault"] = nullptr;
   } else {
@@ -326,8 +376,13 @@ void handleFermentationConfigMessage(const String &payload) {
     publishConfigApplied("error", candidate.version, g_fermentation_config.version, error);
     return;
   }
+  if (!fermentationConfigChanged(g_fermentation_config, candidate)) {
+    publishConfigApplied("ok", candidate.version, g_fermentation_config.version, "");
+    return;
+  }
   g_fermentation_config = candidate;
   g_store.saveFermentationConfig(g_fermentation_config);
+  syncProfileRuntime();
   publishConfigApplied("ok", candidate.version, candidate.version, "");
   g_state_dirty = true;
 }
@@ -339,6 +394,25 @@ void applyOutputCommand(const String &target, const String &state) {
   const bool turn_off = state == "off";
   if (!turn_on && !turn_off) {
     Serial.printf("Ignoring set_output with invalid state=%s\n", state.c_str());
+    return;
+  }
+
+  if (g_fermentation_config.mode == "manual") {
+    String next_output = g_fermentation_config.manual.output;
+    if (target == "heating") {
+      next_output = turn_on ? "heating" : "off";
+    } else if (target == "cooling") {
+      next_output = turn_on ? "cooling" : "off";
+    } else if (target == "all" && turn_off) {
+      next_output = "off";
+    }
+
+    if (next_output != g_fermentation_config.manual.output &&
+        (next_output == "off" || next_output == "heating" || next_output == "cooling")) {
+      g_fermentation_config.manual.output = next_output;
+      g_store.saveFermentationConfig(g_fermentation_config);
+      g_state_dirty = true;
+    }
     return;
   }
 
@@ -396,6 +470,17 @@ void handleCommandMessage(const String &payload) {
     return;
   }
 
+  if (command == "profile_pause" || command == "profile_resume" || command == "profile_release_hold" ||
+      command == "profile_jump_to_step" || command == "profile_stop") {
+    JsonObjectConst args = doc["args"].as<JsonObjectConst>();
+    g_pending_profile_command = command;
+    g_pending_profile_step_id = String(args["step_id"] | "");
+    g_profile_command_pending = true;
+    Serial.printf("Queued profile command=%s step_id=%s\n", g_pending_profile_command.c_str(),
+                  g_pending_profile_step_id.c_str());
+    return;
+  }
+
   if (command == "discover_kasa") {
     Serial.println("Ignoring discover_kasa in firmware_v2: not implemented yet");
     return;
@@ -406,10 +491,19 @@ void handleCommandMessage(const String &payload) {
 
 void processPendingCommands() {
   if (!g_output_command_pending) {
+  } else {
+    g_output_command_pending = false;
+    applyOutputCommand(g_pending_output_target, g_pending_output_state);
+  }
+
+  if (!g_profile_command_pending) {
     return;
   }
-  g_output_command_pending = false;
-  applyOutputCommand(g_pending_output_target, g_pending_output_state);
+  g_profile_command_pending = false;
+  if (g_profile_runtime.handleCommand(g_fermentation_config, g_pending_profile_command, g_pending_profile_step_id, g_store,
+                                      millis())) {
+    g_state_dirty = true;
+  }
 }
 
 void handleSystemPatchMessage(const String &payload) {
@@ -534,6 +628,8 @@ void setupControllerData() {
   } else {
     g_fermentation_config = defaultFermentationConfig(g_system_config.device_id);
   }
+
+  syncProfileRuntime();
 }
 }  // namespace
 
@@ -589,7 +685,12 @@ void loop() {
   processPendingCommands();
   ensureOutputs();
   g_sensors.tick(g_system_config, g_fermentation_config, millis());
-  g_controller.evaluate(g_fermentation_config, g_sensors.snapshot(), millis());
+  const SensorSnapshot &snapshot = g_sensors.snapshot();
+  if (g_profile_runtime.update(g_fermentation_config, controlSensorOperational(snapshot, g_fermentation_config), g_store,
+                               millis())) {
+    g_state_dirty = true;
+  }
+  g_controller.evaluate(g_fermentation_config, g_profile_runtime.state(), snapshot, millis());
   g_controller.apply(*g_heating_output, *g_cooling_output, millis());
 
   if ((millis() - g_last_output_refresh_ms) > kOutputRefreshIntervalMs) {

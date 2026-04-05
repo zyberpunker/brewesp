@@ -11,10 +11,12 @@ Current scope in this rewrite:
 - local `system_config` persisted in NVS
 - recovery AP with onboarding page for Wi-Fi and MQTT bootstrap
 - cached `fermentation_config` persisted in NVS
+- local `manual`, `thermostat`, and `profile` fermentation modes
+- local profile runtime persisted in NVS for reboot recovery
 - DS18B20 beer/chamber probe handling on a shared OneWire bus
 - thermostat control with heating/cooling hysteresis, delays, and fault shutdown
 - pluggable output drivers for `gpio`, `shelly_http_rpc`, and `kasa_local`
-- MQTT availability, heartbeat, state, telemetry, and config apply handling
+- MQTT availability, heartbeat, state, telemetry, config apply, and profile control handling
 
 Current transport limits in `firmware_v2`:
 

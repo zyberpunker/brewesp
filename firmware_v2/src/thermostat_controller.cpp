@@ -7,10 +7,18 @@ const ProbeReading *selectControlProbe(const FermentationConfig &config, const S
   }
   return &sensors.beer;
 }
+
+float effectiveSetpointC(const FermentationConfig &config, const ProfileRuntimeState &profile_runtime) {
+  if (config.mode == "profile" && profile_runtime.active) {
+    return profile_runtime.effective_target_c;
+  }
+  return config.thermostat.setpoint_c;
+}
 }  // namespace
 
-const ControllerState &ThermostatController::evaluate(const FermentationConfig &config, const SensorSnapshot &sensors,
-                                                      uint32_t now_ms) {
+const ControllerState &ThermostatController::evaluate(const FermentationConfig &config,
+                                                      const ProfileRuntimeState &profile_runtime,
+                                                      const SensorSnapshot &sensors, uint32_t now_ms) {
   (void)now_ms;
   state_ = ControllerState();
 
@@ -18,9 +26,28 @@ const ControllerState &ThermostatController::evaluate(const FermentationConfig &
     state_.controller_reason = "no active config";
     return state_;
   }
-  if (config.mode != "thermostat") {
+  if (config.mode == "manual") {
+    state_.automatic_control_active = false;
+    state_.controller_reason = "manual output selection";
+    if (config.manual.output == "heating") {
+      state_.heating_command = true;
+      state_.controller_state = "heating";
+    } else if (config.manual.output == "cooling") {
+      state_.cooling_command = true;
+      state_.controller_state = "cooling";
+    }
+    return state_;
+  }
+  if (config.mode != "thermostat" && config.mode != "profile") {
     state_.fault = "unsupported mode";
-    state_.controller_reason = "profile mode not implemented";
+    state_.controller_reason = "unsupported mode";
+    state_.controller_state = "fault";
+    return state_;
+  }
+  if (config.mode == "profile" && !profile_runtime.active) {
+    state_.fault = "profile runtime inactive";
+    state_.controller_reason = "profile runtime inactive";
+    state_.controller_state = "fault";
     return state_;
   }
 
@@ -46,7 +73,7 @@ const ControllerState &ThermostatController::evaluate(const FermentationConfig &
     return state_;
   }
 
-  const float setpoint = config.thermostat.setpoint_c;
+  const float setpoint = effectiveSetpointC(config, profile_runtime);
   const float hysteresis = config.thermostat.hysteresis_c;
   const float control_temp = control_probe->adjusted_c;
   bool heating_demand = control_temp < (setpoint - hysteresis);
