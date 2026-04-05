@@ -3,6 +3,16 @@
 {% block heading %}Fermentation Fleet{% endblock %}
 
 {% block content %}
+{% if deleted_device_id %}
+<section class="notice-banner notice-banner--success" aria-live="polite">
+  <strong>{{ deleted_device_id }}</strong> was removed from the web registry. If it publishes MQTT again, it will reappear automatically.
+</section>
+{% elif missing_device_id %}
+<section class="notice-banner notice-banner--warning" aria-live="polite">
+  <strong>{{ missing_device_id }}</strong> was already missing from the web registry.
+</section>
+{% endif %}
+
 <section class="hero-surface">
   <div>
     <p class="overline">Operations Surface</p>
@@ -79,7 +89,16 @@
 
     <footer class="device-card__footer">
       <span>Last heartbeat: {{ device.last_heartbeat_at or "never" }}</span>
-      <a href="/devices/{{ device.device_id }}">Open device</a>
+      <div class="device-card__actions">
+        <a href="/devices/{{ device.device_id }}">Open device</a>
+        <form
+          method="post"
+          action="/devices/{{ device.device_id }}/delete"
+          data-confirm-message="Delete {{ device.device_id }} from the web registry? It will come back automatically if it publishes MQTT again."
+          onsubmit="return confirm(this.dataset.confirmMessage);">
+          <button type="submit" class="danger-button">Delete</button>
+        </form>
+      </div>
     </footer>
   </article>
   {% else %}

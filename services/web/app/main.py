@@ -8,10 +8,10 @@ import re
 from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import selectinload
 
 from .config import settings
@@ -19,6 +19,7 @@ from .db import SessionLocal, init_db
 from .models import (
     Device,
     DeviceFermentationConfig,
+    DeviceHeartbeat,
     DeviceOutputAssignment,
     DeviceTelemetry,
     DiscoveredRelay,
@@ -909,6 +910,17 @@ def _format_timestamp(value: datetime | None) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _delete_device_records(session, device: Device) -> None:
+    session.execute(delete(DeviceHeartbeat).where(DeviceHeartbeat.device_id == device.id))
+    session.execute(delete(DeviceTelemetry).where(DeviceTelemetry.device_id == device.id))
+    session.execute(
+        delete(DeviceFermentationConfig).where(DeviceFermentationConfig.device_id == device.id)
+    )
+    session.execute(delete(DeviceOutputAssignment).where(DeviceOutputAssignment.device_id == device.id))
+    session.execute(delete(DiscoveredRelay).where(DiscoveredRelay.source_device_id == device.id))
+    session.delete(device)
+
+
 OUTPUT_COMMAND_MAP = {
     "heating_on": {"command": "set_output", "target": "heating", "state": "on"},
     "heating_off": {"command": "set_output", "target": "heating", "state": "off"},
@@ -921,6 +933,8 @@ OUTPUT_COMMAND_MAP = {
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     now = _utcnow()
+    deleted_device_id = request.query_params.get("device_deleted")
+    missing_device_id = request.query_params.get("device_missing")
     with SessionLocal() as session:
         devices = session.scalars(
             select(Device)
@@ -950,6 +964,8 @@ def dashboard(request: Request):
             "devices": devices,
             "telemetry_series": telemetry_series,
             "online_count": len([device for device in devices if device.display_status == "online"]),
+            "deleted_device_id": deleted_device_id,
+            "missing_device_id": missing_device_id,
             "page_title": "Fleet Overview",
             "format_temperature": _format_temperature,
             "format_timestamp": _format_timestamp,
@@ -1136,6 +1152,35 @@ def device_detail(request: Request, device_id: str):
             "page_title": f"{device.device_id} detail",
         },
     )
+
+
+@app.post("/devices/{device_id}/delete")
+def delete_device(request: Request, device_id: str):
+    with SessionLocal() as session:
+        device = session.scalar(select(Device).where(Device.device_id == device_id))
+        redirect_url = request.url_for("dashboard")
+        if device is None:
+            redirect_url = redirect_url.include_query_params(device_missing=device_id)
+            return RedirectResponse(str(redirect_url), status_code=303)
+
+        deleted_device_id = device.device_id
+        _delete_device_records(session, device)
+        session.commit()
+        redirect_url = redirect_url.include_query_params(device_deleted=deleted_device_id)
+        return RedirectResponse(str(redirect_url), status_code=303)
+
+
+@app.delete("/api/devices/{device_id}")
+def delete_device_api(device_id: str):
+    with SessionLocal() as session:
+        device = session.scalar(select(Device).where(Device.device_id == device_id))
+        if device is None:
+            return JSONResponse({"error": "Device not found"}, status_code=404)
+
+        deleted_device_id = device.device_id
+        _delete_device_records(session, device)
+        session.commit()
+        return JSONResponse({"status": "deleted", "device_id": deleted_device_id})
 
 
 @app.get("/api/devices/{device_id}/live")
