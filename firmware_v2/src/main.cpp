@@ -136,6 +136,68 @@ String formatHoursInput(uint32_t duration_s) {
   return formatFloatInput(static_cast<float>(duration_s) / 3600.0f, 2);
 }
 
+String yesNo(bool value) {
+  return value ? "yes" : "no";
+}
+
+String wifiStatusLabel() {
+  return WiFi.status() == WL_CONNECTED ? "connected" : "disconnected";
+}
+
+String wifiIpLabel() {
+  return WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "offline";
+}
+
+String probeStatusLabel(const ProbeReading &probe) {
+  if (!probe.present) {
+    return "missing";
+  }
+  if (!probe.valid) {
+    return "invalid";
+  }
+  if (probe.stale) {
+    return "stale";
+  }
+  return "ok";
+}
+
+String probeTemperatureLabel(const ProbeReading &probe) {
+  if (!probe.present || !probe.valid || isnan(probe.adjusted_c)) {
+    return "n/a";
+  }
+  return formatFloatInput(probe.adjusted_c, 2) + " C";
+}
+
+String probeLastSeenLabel(const ProbeReading &probe, uint32_t now_ms) {
+  if (!probe.present || probe.last_seen_ms == 0 || probe.last_seen_ms > now_ms) {
+    return "n/a";
+  }
+  return String((now_ms - probe.last_seen_ms) / 1000UL) + " s ago";
+}
+
+void appendProbeJson(JsonObject target, const ProbeReading &probe, uint32_t now_ms) {
+  target["present"] = probe.present;
+  target["valid"] = probe.valid;
+  target["stale"] = probe.stale;
+  target["status"] = probeStatusLabel(probe);
+  target["rom"] = probe.rom;
+  if (probe.valid && !isnan(probe.raw_c)) {
+    target["raw_c"] = probe.raw_c;
+  } else {
+    target["raw_c"] = nullptr;
+  }
+  if (probe.valid && !isnan(probe.adjusted_c)) {
+    target["adjusted_c"] = probe.adjusted_c;
+  } else {
+    target["adjusted_c"] = nullptr;
+  }
+  if (probe.present && probe.last_seen_ms != 0 && probe.last_seen_ms <= now_ms) {
+    target["last_seen_s_ago"] = (now_ms - probe.last_seen_ms) / 1000UL;
+  } else {
+    target["last_seen_s_ago"] = nullptr;
+  }
+}
+
 bool parseStrictFloat(String value, float &result) {
   value.trim();
   if (value.isEmpty()) {
@@ -360,6 +422,33 @@ bool saveLocalFermentationConfig(const FermentationConfig &candidate, const char
   return true;
 }
 
+bool saveLocalManualOutputSelection(const String &requested_output, String &error) {
+  if (!localConfigWritable()) {
+    error = "local manual control requires config_owner=local";
+    return false;
+  }
+
+  String output = requested_output;
+  output.trim();
+  output.toLowerCase();
+  if (output != "off" && output != "heating" && output != "cooling") {
+    error = "manual output must be off, heating, or cooling";
+    return false;
+  }
+
+  if (g_fermentation_config.mode == "manual" && g_fermentation_config.manual.output == output) {
+    return true;
+  }
+
+  FermentationConfig candidate = g_fermentation_config;
+  candidate.schema_version = 2;
+  candidate.device_id = g_system_config.device_id;
+  candidate.version = nextLocalConfigVersion();
+  candidate.mode = "manual";
+  candidate.manual.output = output;
+  return saveLocalFermentationConfig(candidate, "local_http_manual_control", error);
+}
+
 bool buildLocalThermostatCandidateFromForm(FermentationConfig &candidate, bool activate_mode, String &error) {
   candidate = g_fermentation_config;
   candidate.schema_version = 2;
@@ -497,6 +586,16 @@ String localProfileCommandSuccessMessage(const String &command) {
   return "Profile command applied.";
 }
 
+String localManualControlSuccessMessage(const String &output) {
+  if (output == "heating") {
+    return "Manual mode saved with heating selected.";
+  }
+  if (output == "cooling") {
+    return "Manual mode saved with cooling selected.";
+  }
+  return "Manual mode saved with outputs off.";
+}
+
 bool applyLocalProfileCommand(const String &command, String &error) {
   if (!localConfigWritable()) {
     error = "local profile commands require config_owner=local";
@@ -556,6 +655,9 @@ String localControlPage(const String &message, bool is_error) {
   const DriverStatus heating = g_heating_output ? g_heating_output->status() : DriverStatus();
   const DriverStatus cooling = g_cooling_output ? g_cooling_output->status() : DriverStatus();
   const ControllerState &controller = g_controller.state();
+  const SensorSnapshot &snapshot = g_sensors.snapshot();
+  const uint32_t now_ms = millis();
+  const bool wifi_connected = WiFi.status() == WL_CONNECTED;
 
   String page;
   page.reserve(16384);
@@ -575,9 +677,14 @@ String localControlPage(const String &message, bool is_error) {
   }
   page += "<p class='meta'>Device: " + htmlEscape(g_system_config.device_id) + "<br>Current owner: " +
           htmlEscape(g_system_config.config_owner) +
+          "<br>Local config writable: " + yesNo(writable) +
+          "<br>Uptime: " + String(now_ms / 1000UL) + " s" +
+          "<br>Wi-Fi: " + wifiStatusLabel() +
+          "<br>IP: " + htmlEscape(wifiIpLabel()) +
           "<br>MQTT configured: " + String(mqttConfigured(g_system_config) ? "yes" : "no") +
           "<br>MQTT connected: " + String(g_mqtt_client.connected() ? "yes" : "no") +
           "<br>Current mode: " + htmlEscape(g_fermentation_config.mode) +
+          "<br>Manual target: " + htmlEscape(g_fermentation_config.mode == "manual" ? g_fermentation_config.manual.output : String("off")) +
           "<br>Stored profile steps: " + String(g_fermentation_config.profile.step_count) +
           "<br>Active config version: " + String(g_fermentation_config.version) + "</p></section>";
 
@@ -592,7 +699,29 @@ String localControlPage(const String &message, bool is_error) {
   if (!controller.fault.isEmpty()) {
     page += "<br>Fault: " + htmlEscape(controller.fault);
   }
-  page += "</p></div></div></section>";
+  page += "</p></div>";
+  page += "<div class='card'><strong>Network</strong><p class='meta'>Wi-Fi: " + wifiStatusLabel() +
+          "<br>Configured SSID: " + htmlEscape(g_system_config.wifi.ssid) +
+          "<br>Current SSID: " + htmlEscape(wifi_connected ? WiFi.SSID() : String("n/a")) +
+          "<br>IP: " + htmlEscape(wifiIpLabel()) +
+          "<br>RSSI: " + String(wifi_connected ? WiFi.RSSI() : 0) +
+          "<br>MQTT: " + String(g_mqtt_client.connected() ? "connected" : "disconnected") +
+          "<br>Free heap: " + String(ESP.getFreeHeap()) + " bytes</p></div></div></section>";
+
+  page += "<section><h2>Sensors</h2><div class='grid'>";
+  auto renderProbeCard = [&](const char *title, const ProbeReading &probe, bool is_control_probe) {
+    page += "<div class='card'><strong>";
+    page += title;
+    page += "</strong><p class='meta'>Status: " + htmlEscape(probeStatusLabel(probe)) +
+            "<br>Temperature: " + htmlEscape(probeTemperatureLabel(probe)) +
+            "<br>ROM: " + htmlEscape(probe.rom.isEmpty() ? String("n/a") : probe.rom) +
+            "<br>Last seen: " + htmlEscape(probeLastSeenLabel(probe, now_ms)) +
+            "<br>Control probe: " + String(is_control_probe ? "yes" : "no") + "</p></div>";
+  };
+  renderProbeCard("Beer probe", snapshot.beer, g_fermentation_config.sensors.control_sensor != "secondary");
+  renderProbeCard("Chamber probe", snapshot.chamber,
+                  g_fermentation_config.sensors.control_sensor == "secondary" && g_fermentation_config.sensors.secondary_enabled);
+  page += "</div><p class='help'>Local status stays available even when MQTT is disconnected. Safety faults still force outputs off.</p></section>";
 
   page += "<section><h2>Config Owner</h2><p class='help'>Profile editing and local run commands are only writable while ownership is <code>local</code>.</p>";
   page += "<form method='post' action='/control-owner'><label>Config owner</label>";
@@ -600,6 +729,20 @@ String localControlPage(const String &message, bool is_error) {
           ">local</option><option value='external' " +
           String(g_system_config.config_owner == kConfigOwnerExternal ? "selected" : "") + ">external</option></select>";
   page += "<div class='button-row'><button type='submit'>Apply without reboot</button></div></form></section>";
+
+  page += "<section><h2>Manual Control</h2>";
+  page += "<p class='help'>These buttons save <code>manual</code> mode locally with a persistent target of <code>off</code>, <code>heating</code>, or <code>cooling</code>. Sensor faults and relay interlocks still apply.</p>";
+  page += "<p class='meta'>Current manual target: " +
+          htmlEscape(g_fermentation_config.mode == "manual" ? g_fermentation_config.manual.output : String("off")) +
+          "</p>";
+  if (!writable) {
+    page += "<div class='banner error'>Switch ownership to <code>local</code> before changing manual output from the ESP.</div>";
+  }
+  page += "<form method='post' action='/manual-output'><div class='button-row'>";
+  page += "<button type='submit' name='output' value='heating'" + disabledAttr(!writable) + ">Heating</button>";
+  page += "<button type='submit' name='output' value='off'" + disabledAttr(!writable) + ">Off</button>";
+  page += "<button type='submit' name='output' value='cooling'" + disabledAttr(!writable) + ">Cooling</button>";
+  page += "</div></form></section>";
 
   page += "<section><h2>Profile Runtime</h2><div class='grid'>";
   page += "<div class='card'><strong>Stored profile</strong><p class='meta'>ID: " +
@@ -690,21 +833,58 @@ String localControlPage(const String &message, bool is_error) {
 }
 
 void sendLocalRuntimeState() {
-  DynamicJsonDocument doc(4096);
+  const SensorSnapshot &snapshot = g_sensors.snapshot();
+  const ControllerState &controller = g_controller.state();
+  const DriverStatus heating = g_heating_output ? g_heating_output->status() : DriverStatus();
+  const DriverStatus cooling = g_cooling_output ? g_cooling_output->status() : DriverStatus();
+  const uint32_t now_ms = millis();
+  DynamicJsonDocument doc(6144);
   doc["device_id"] = g_system_config.device_id;
+  doc["uptime_s"] = now_ms / 1000UL;
   doc["config_owner"] = g_system_config.config_owner;
   doc["local_config_writable"] = localConfigWritable();
   doc["external_config_active"] = externalConfigOwnerActive();
   doc["mqtt_configured"] = mqttConfigured(g_system_config);
   doc["mqtt_connected"] = g_mqtt_client.connected();
+  doc["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+  doc["wifi_status"] = wifiStatusLabel();
+  doc["wifi_configured_ssid"] = g_system_config.wifi.ssid;
+  doc["wifi_ip"] = wifiIpLabel();
+  doc["wifi_rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+  doc["heap_free"] = ESP.getFreeHeap();
   doc["mode"] = g_fermentation_config.valid ? g_fermentation_config.mode : "thermostat";
   doc["active_config_version"] = g_fermentation_config.version;
   doc["name"] = g_fermentation_config.name;
+  JsonObject manual = doc.createNestedObject("manual");
+  manual["enabled"] = g_fermentation_config.mode == "manual";
+  manual["output"] = g_fermentation_config.manual.output;
   JsonObject thermostat = doc.createNestedObject("thermostat");
   thermostat["setpoint_c"] = g_fermentation_config.thermostat.setpoint_c;
   thermostat["hysteresis_c"] = g_fermentation_config.thermostat.hysteresis_c;
   thermostat["cooling_delay_s"] = g_fermentation_config.thermostat.cooling_delay_s;
   thermostat["heating_delay_s"] = g_fermentation_config.thermostat.heating_delay_s;
+  JsonObject outputs = doc.createNestedObject("outputs");
+  JsonObject heating_json = outputs.createNestedObject("heating");
+  heating_json["known"] = heating.known;
+  heating_json["state"] = outputStateString(heating);
+  heating_json["detail"] = heating.description;
+  JsonObject cooling_json = outputs.createNestedObject("cooling");
+  cooling_json["known"] = cooling.known;
+  cooling_json["state"] = outputStateString(cooling);
+  cooling_json["detail"] = cooling.description;
+  doc["controller_state"] = controller.controller_state;
+  doc["controller_reason"] = controller.controller_reason;
+  doc["automatic_control_active"] = controller.automatic_control_active;
+  if (controller.fault.isEmpty()) {
+    doc["fault"] = nullptr;
+  } else {
+    doc["fault"] = controller.fault;
+  }
+  JsonObject sensors = doc.createNestedObject("sensors");
+  sensors["control_sensor"] = g_fermentation_config.sensors.control_sensor;
+  sensors["secondary_enabled"] = g_fermentation_config.sensors.secondary_enabled;
+  appendProbeJson(sensors.createNestedObject("beer"), snapshot.beer, now_ms);
+  appendProbeJson(sensors.createNestedObject("chamber"), snapshot.chamber, now_ms);
   doc["local_profile_editor_max_steps"] = kLocalProfileEditorMaxSteps;
   doc["stored_profile_available"] = storedProfileAvailable();
   doc["stored_profile_step_count"] = g_fermentation_config.profile.step_count;
@@ -834,6 +1014,46 @@ void handleLocalControlOwnerApi() {
                       "{\"result\":\"ok\",\"config_owner\":\"" + g_system_config.config_owner + "\"}");
 }
 
+void handleLocalManualControlForm() {
+  String error;
+  const String output = g_local_server.arg("output");
+  if (!saveLocalManualOutputSelection(output, error)) {
+    g_local_server.send(409, "text/html", localControlPage(error, true));
+    return;
+  }
+
+  g_local_server.send(200, "text/html", localControlPage(localManualControlSuccessMessage(output), false));
+}
+
+void handleLocalManualControlApi() {
+  DynamicJsonDocument request(256);
+  if (deserializeJson(request, g_local_server.arg("plain"))) {
+    g_local_server.send(400, "application/json", "{\"result\":\"error\",\"message\":\"invalid JSON\"}");
+    return;
+  }
+
+  String error;
+  const String output = String(request["output"] | "");
+  DynamicJsonDocument response(256);
+  if (!saveLocalManualOutputSelection(output, error)) {
+    response["result"] = "error";
+    response["message"] = error;
+    response["mode"] = g_fermentation_config.mode;
+    response["manual_output"] = g_fermentation_config.manual.output;
+    String payload;
+    serializeJson(response, payload);
+    g_local_server.send(409, "application/json", payload);
+    return;
+  }
+
+  response["result"] = "ok";
+  response["mode"] = g_fermentation_config.mode;
+  response["manual_output"] = g_fermentation_config.manual.output;
+  String payload;
+  serializeJson(response, payload);
+  g_local_server.send(200, "application/json", payload);
+}
+
 void handleLocalProfileSaveForm() {
   String error;
   FermentationConfig candidate;
@@ -880,11 +1100,13 @@ void beginLocalControlServer() {
   }
   g_local_server.on("/", HTTP_GET, handleLocalControlRoot);
   g_local_server.on("/control-owner", HTTP_POST, handleLocalControlOwnerForm);
+  g_local_server.on("/manual-output", HTTP_POST, handleLocalManualControlForm);
   g_local_server.on("/thermostat/save", HTTP_POST, handleLocalThermostatSaveForm);
   g_local_server.on("/profile/save", HTTP_POST, handleLocalProfileSaveForm);
   g_local_server.on("/profile/command", HTTP_POST, handleLocalProfileCommandForm);
   g_local_server.on("/api/runtime/state", HTTP_GET, sendLocalRuntimeState);
   g_local_server.on("/api/control-owner", HTTP_POST, handleLocalControlOwnerApi);
+  g_local_server.on("/api/manual-output", HTTP_POST, handleLocalManualControlApi);
   g_local_server.onNotFound([]() { g_local_server.send(404, "text/plain", "Not found"); });
   g_local_server.begin();
   g_local_server_started = true;
