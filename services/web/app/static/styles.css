@@ -292,6 +292,30 @@ body {
   color: #8c0009;
 }
 
+.notice-banner {
+  margin: 0 0 1rem;
+  padding: 0.95rem 1rem;
+  border-radius: 20px;
+  border: 1px solid rgba(31, 39, 36, 0.08);
+  box-shadow: var(--elevation-1);
+}
+
+.notice-banner strong {
+  font-weight: 800;
+}
+
+.notice-banner--success {
+  background: rgba(47, 108, 96, 0.1);
+  border-color: rgba(47, 108, 96, 0.22);
+  color: #1f5f40;
+}
+
+.notice-banner--warning {
+  background: rgba(212, 106, 58, 0.12);
+  border-color: rgba(212, 106, 58, 0.2);
+  color: #8f4a24;
+}
+
 .fault-banner[hidden] {
   display: none;
 }
@@ -469,6 +493,17 @@ body {
 .device-card__footer {
   color: var(--md-sys-color-on-surface-variant);
   font-size: 0.88rem;
+}
+
+.device-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 0.6rem;
+}
+
+.device-card__actions form {
+  margin: 0;
 }
 
 .inline-meta {
@@ -738,6 +773,16 @@ button:disabled {
   .control-status-grid,
   .spec-grid {
     grid-template-columns: 1fr;
+  }
+
+  .device-card__footer {
+    flex-direction: column;
+    align-items: start;
+  }
+
+  .device-card__actions {
+    width: 100%;
+    justify-content: start;
   }
 
   .line-chart {

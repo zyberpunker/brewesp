@@ -12,6 +12,7 @@ Responsibilities:
 - telemetry/history storage
 - publish config JSON to MQTT
 - subscribe to state/telemetry topics
+- allow removing stale devices from the web registry when they are gone from MQTT
 
 Recommended first stack:
 
@@ -25,6 +26,7 @@ Current direction:
 - server-rendered FastAPI app with a modern dashboard UI
 - MQTT ingest for `availability`, `heartbeat`, and `state`
 - time-series storage in TimescaleDB for heartbeat and later telemetry history
+- manual device deletion from the dashboard only clears web-side stored state; a device that publishes MQTT again is recreated automatically
 
 Run locally with Docker Compose from:
 
