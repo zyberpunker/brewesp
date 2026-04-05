@@ -7,6 +7,7 @@ const uint32_t kHeartbeatLogIntervalMs = 5000;
 constexpr float kDefaultSetpointC = 20.0f;
 constexpr uint32_t kProfileRuntimePersistIntervalMs = 300000UL;
 constexpr uint32_t kSensorStaleAfterMs = 30000UL;
+constexpr uint32_t kWifiBootResetDelayMs = 200UL;
 
 bool isSensorStale(const SensorManager::Reading& reading, uint32_t nowMs) {
     return reading.updatedAtMs != 0 && static_cast<uint32_t>(nowMs - reading.updatedAtMs) > kSensorStaleAfterMs;
@@ -24,6 +25,10 @@ String sensorFaultReason(const char* sensorName, const SensorManager::Reading& r
 
 bool isManualOutputSelection(const String& value) {
     return value == "off" || value == "heating" || value == "cooling";
+}
+
+bool wifiHasUsableConnection() {
+    return WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
 }
 }
 
@@ -116,6 +121,12 @@ void App::update() {
 
 void App::beginNormalMode() {
     provisioningMode_ = false;
+    wifiConnectStartedMs_ = 0;
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(true, false);
+    delay(kWifiBootResetDelayMs);
+    Serial.println("[wifi] station reset complete");
     WiFi.mode(WIFI_STA);
     ensureWifiConnected();
     mqtt_.begin(config_);
@@ -839,14 +850,18 @@ void App::ensureWifiConnected() {
         return;
     }
 
-    if (WiFi.status() == WL_CONNECTED) {
+    if (wifiHasUsableConnection()) {
         wifiConnectStartedMs_ = 0;
         return;
     }
 
     if (wifiConnectStartedMs_ == 0) {
         wifiConnectStartedMs_ = millis();
-        Serial.printf("[wifi] connecting ssid=%s\r\n", config_.wifi.ssid.c_str());
+        Serial.printf(
+            "[wifi] connecting ssid=%s status=%d ip=%s\r\n",
+            config_.wifi.ssid.c_str(),
+            static_cast<int>(WiFi.status()),
+            WiFi.localIP().toString().c_str());
         WiFi.begin(config_.wifi.ssid.c_str(), config_.wifi.password.c_str());
         return;
     }
