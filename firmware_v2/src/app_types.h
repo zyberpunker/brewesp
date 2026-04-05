@@ -70,10 +70,22 @@ struct OtaConfig {
   bool allow_http = false;
 };
 
+constexpr char kConfigOwnerLocal[] = "local";
+constexpr char kConfigOwnerExternal[] = "external";
+
+inline bool isValidConfigOwner(const String &owner) {
+  return owner == kConfigOwnerLocal || owner == kConfigOwnerExternal;
+}
+
+inline bool isExternalConfigOwner(const String &owner) {
+  return owner == kConfigOwnerExternal;
+}
+
 struct SystemConfig {
   int schema_version = 1;
   String device_id;
   String timezone = "Europe/Stockholm";
+  String config_owner = kConfigOwnerExternal;
   NetworkWifiConfig wifi;
   RecoveryApConfig recovery_ap;
   MqttConfig mqtt;

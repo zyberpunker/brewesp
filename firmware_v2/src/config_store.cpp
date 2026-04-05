@@ -15,6 +15,10 @@ String chipSuffix() {
   return String(buffer);
 }
 
+bool mqttConfigured(const SystemConfig &config) {
+  return !config.mqtt.host.isEmpty() && !config.mqtt.topic_prefix.isEmpty();
+}
+
 void writeOutputJson(JsonObject output, const OutputConfig &config) {
   output["driver"] = config.driver;
   if (config.driver == "gpio") {
@@ -198,6 +202,7 @@ bool parseSystemConfigJson(const String &payload, SystemConfig &config, String &
   config.schema_version = root["schema_version"] | config.schema_version;
   config.device_id = String(root["device_id"] | config.device_id);
   config.timezone = String(root["timezone"] | config.timezone);
+  config.config_owner = String(root["config_owner"] | config.config_owner);
 
   JsonObjectConst network = root["network"].as<JsonObjectConst>();
   JsonObjectConst wifi = network["wifi"].as<JsonObjectConst>();
@@ -276,6 +281,9 @@ bool parseSystemConfigPatchJson(const String &payload, const SystemConfig &base,
   if (root["device_id"].is<const char *>()) {
     updated.device_id = String(root["device_id"].as<const char *>());
   }
+  if (root["config_owner"].is<const char *>()) {
+    updated.config_owner = String(root["config_owner"].as<const char *>());
+  }
   if (root["heartbeat_interval_s"].is<uint32_t>()) {
     updated.heartbeat.interval_s = root["heartbeat_interval_s"].as<uint32_t>();
   }
@@ -305,6 +313,10 @@ bool validateSystemConfig(SystemConfig &config, String &error) {
     error = "device_id is required";
     return false;
   }
+  if (!isValidConfigOwner(config.config_owner)) {
+    error = "config_owner must be local or external";
+    return false;
+  }
   if (config.wifi.ssid.isEmpty()) {
     error = "wifi ssid is required";
     return false;
@@ -313,7 +325,7 @@ bool validateSystemConfig(SystemConfig &config, String &error) {
     error = "wifi password must be at least 8 characters";
     return false;
   }
-  if (config.mqtt.host.isEmpty()) {
+  if (isExternalConfigOwner(config.config_owner) && config.mqtt.host.isEmpty()) {
     error = "mqtt host is required";
     return false;
   }
@@ -324,9 +336,12 @@ bool validateSystemConfig(SystemConfig &config, String &error) {
   if (config.mqtt.client_id.isEmpty()) {
     config.mqtt.client_id = config.device_id;
   }
-  if (config.mqtt.topic_prefix.isEmpty()) {
+  if (isExternalConfigOwner(config.config_owner) && config.mqtt.topic_prefix.isEmpty()) {
     error = "mqtt topic_prefix is required";
     return false;
+  }
+  if (!isExternalConfigOwner(config.config_owner) && !mqttConfigured(config)) {
+    config.mqtt.client_id = config.device_id;
   }
   if (config.heartbeat.interval_s < 15) {
     config.heartbeat.interval_s = 15;
@@ -363,6 +378,7 @@ String serializeSystemConfig(const SystemConfig &config) {
   doc["schema_version"] = 1;
   doc["device_id"] = config.device_id;
   doc["timezone"] = config.timezone;
+  doc["config_owner"] = config.config_owner;
 
   JsonObject network = doc.createNestedObject("network");
   JsonObject wifi = network.createNestedObject("wifi");

@@ -105,6 +105,8 @@ Payload example:
   "ts": 1743343200,
   "temp_primary_c": 18.42,
   "temp_secondary_c": 17.1,
+  "config_owner": "external",
+  "local_config_writable": false,
   "setpoint_c": 18.5,
   "effective_target_c": 18.7,
   "mode": "profile",
@@ -149,6 +151,9 @@ Payload example:
 {
   "device_id": "fermenter-01",
   "ui": "headless",
+  "config_owner": "external",
+  "local_config_writable": false,
+  "external_config_active": true,
   "mode": "profile",
   "setpoint_c": 18.5,
   "hysteresis_c": 0.3,
@@ -220,6 +225,12 @@ Expected `profile_runtime.phase` values:
 - `paused`
 - `completed`
 - `faulted`
+
+Ownership fields:
+
+- `config_owner` is `local` or `external`
+- `local_config_writable=true` means the device currently owns drift-config writes
+- `external_config_active=true` means MQTT config and command writes are active
 
 ### `alerts/*`
 
@@ -363,6 +374,8 @@ Important:
   ESP32
 - today it is used for output routing changes plus selected runtime settings
   such as heartbeat interval and OTA fields
+- runtime ownership stays local to the ESP32, so retained MQTT patches must not
+  change `config_owner`
 - the firmware only applies the fields it understands and keeps the rest of the
   locally stored bootstrap config unchanged
 
@@ -662,6 +675,8 @@ Recommended approach:
 - fallback recovery AP/captive portal if the device has no working network
 - persist `system_config` in NVS
 - optionally let the web service call the local API when the device is online
+- expose a local owner-switch endpoint that can change between `local` and
+  `external` without reboot when the device is already running
 
 Headless operation:
 

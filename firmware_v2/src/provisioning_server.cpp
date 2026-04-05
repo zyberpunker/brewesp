@@ -14,7 +14,7 @@ String htmlEscape(String value) {
 
 void ProvisioningServer::begin(const SystemConfig &defaults) {
   defaults_ = defaults;
-  last_message_ = "Enter Wi-Fi, MQTT, and output settings, then save to reboot into normal mode.";
+  last_message_ = "Enter Wi-Fi and output settings. MQTT is required only when config owner is external.";
 
   server_.on("/", HTTP_GET, [this]() { handleRoot(); });
   server_.on("/save", HTTP_POST, [this]() { handleSave(); });
@@ -62,6 +62,7 @@ SystemConfig ProvisioningServer::buildFormConfig() {
   SystemConfig config = defaults_;
   config.device_id = formValue("device_id", defaults_.device_id);
   config.timezone = formValue("timezone", defaults_.timezone);
+  config.config_owner = formValue("config_owner", defaults_.config_owner);
   config.wifi.ssid = formValue("wifi_ssid", defaults_.wifi.ssid);
   config.wifi.password = formValue("wifi_password", defaults_.wifi.password);
   config.mqtt.host = formValue("mqtt_host", defaults_.mqtt.host);
@@ -103,7 +104,7 @@ String ProvisioningServer::renderPage() const {
   page += "<title>BrewESP Recovery</title><style>";
   page += "body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f1ea;color:#1f2a30;}main{max-width:980px;margin:0 auto;padding:24px;}";
   page += "h1{margin-top:0;}section{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 4px 14px rgba(0,0,0,.08);}label{display:block;font-weight:600;margin:10px 0 6px;}";
-  page += "input{width:100%;padding:10px;border:1px solid #c9ced3;border-radius:8px;box-sizing:border-box;}button{background:#1f6b75;color:#fff;border:0;padding:12px 18px;border-radius:8px;font-weight:700;cursor:pointer;}small{color:#55636d;} .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;}";
+  page += "input,select{width:100%;padding:10px;border:1px solid #c9ced3;border-radius:8px;box-sizing:border-box;}button{background:#1f6b75;color:#fff;border:0;padding:12px 18px;border-radius:8px;font-weight:700;cursor:pointer;}small{color:#55636d;} .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;}";
   page += ".banner{background:#dfeee8;border-left:4px solid #1f6b75;padding:12px 14px;border-radius:8px;margin-bottom:16px;}</style></head><body><main>";
   page += "<h1>BrewESP v2 recovery AP</h1>";
   page += "<div class='banner'>" + htmlEscape(last_message_) + "</div>";
@@ -111,6 +112,10 @@ String ProvisioningServer::renderPage() const {
   page += "<section><h2>Device</h2><div class='grid'>";
   page += "<div><label>Device ID</label><input name='device_id' value='" + htmlEscape(defaults_.device_id) + "'></div>";
   page += "<div><label>Timezone</label><input name='timezone' value='" + htmlEscape(defaults_.timezone) + "'></div>";
+  page += "<div><label>Config owner</label><select name='config_owner'><option value='local' " +
+          String(defaults_.config_owner == kConfigOwnerLocal ? "selected" : "") +
+          ">local</option><option value='external' " +
+          String(defaults_.config_owner == kConfigOwnerExternal ? "selected" : "") + ">external</option></select></div>";
   page += "<div><label>Heartbeat interval (s)</label><input name='heartbeat_interval_s' type='number' value='" + String(defaults_.heartbeat.interval_s) + "'></div>";
   page += "<div><label>OTA manifest URL</label><input name='ota_manifest_url' value='" + htmlEscape(defaults_.ota.manifest_url) + "'></div>";
   page += "</div><label><input type='checkbox' name='ota_allow_http' " + String(defaults_.ota.allow_http ? "checked" : "") + "> Allow OTA over plain HTTP</label></section>";

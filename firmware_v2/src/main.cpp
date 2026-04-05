@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include <esp_system.h>
 #include <time.h>
 
@@ -35,8 +36,10 @@ std::unique_ptr<OutputDriver> g_heating_output;
 std::unique_ptr<OutputDriver> g_cooling_output;
 WiFiClient g_wifi_client;
 PubSubClient g_mqtt_client(g_wifi_client);
+WebServer g_local_server(80);
 
 bool g_provisioning_mode = false;
+bool g_local_server_started = false;
 bool g_state_dirty = true;
 uint32_t g_last_telemetry_ms = 0;
 uint32_t g_last_state_ms = 0;
@@ -54,6 +57,32 @@ String g_pending_profile_command;
 String g_pending_profile_step_id;
 
 void publishState();
+void publishAvailability(const char *status);
+bool connectMqtt();
+
+bool mqttConfigured(const SystemConfig &config) {
+  return !config.mqtt.host.isEmpty() && !config.mqtt.topic_prefix.isEmpty();
+}
+
+bool externalConfigOwnerActive() {
+  return isExternalConfigOwner(g_system_config.config_owner);
+}
+
+bool localConfigWritable() {
+  return !externalConfigOwnerActive();
+}
+
+bool mqttRuntimeEnabled() {
+  return externalConfigOwnerActive() && mqttConfigured(g_system_config);
+}
+
+String htmlEscape(String value) {
+  value.replace("&", "&amp;");
+  value.replace("<", "&lt;");
+  value.replace(">", "&gt;");
+  value.replace("\"", "&quot;");
+  return value;
+}
 
 String topicBase() {
   return g_system_config.mqtt.topic_prefix + "/" + g_system_config.device_id;
@@ -144,6 +173,160 @@ void publishStateIfConnected() {
   }
 }
 
+String localControlPage(const String &message) {
+  String page;
+  page.reserve(3072);
+  page += "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+  page += "<title>BrewESP Control Owner</title><style>";
+  page += "body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f1ea;color:#1f2a30;}main{max-width:760px;margin:0 auto;padding:24px;}";
+  page += "section{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 4px 14px rgba(0,0,0,.08);}label{display:block;font-weight:600;margin:10px 0 6px;}";
+  page += "input,select{width:100%;padding:10px;border:1px solid #c9ced3;border-radius:8px;box-sizing:border-box;}button{background:#1f6b75;color:#fff;border:0;padding:12px 18px;border-radius:8px;font-weight:700;cursor:pointer;}";
+  page += ".banner{background:#dfeee8;border-left:4px solid #1f6b75;padding:12px 14px;border-radius:8px;margin-bottom:16px;}.meta{color:#55636d;}";
+  page += "</style></head><body><main><section><h1>Control Owner</h1>";
+  if (!message.isEmpty()) {
+    page += "<div class='banner'>" + htmlEscape(message) + "</div>";
+  }
+  page += "<p class='meta'>Device: " + htmlEscape(g_system_config.device_id) + "<br>Current owner: " +
+          htmlEscape(g_system_config.config_owner) +
+          "<br>MQTT configured: " + String(mqttConfigured(g_system_config) ? "yes" : "no") +
+          "<br>MQTT connected: " + String(g_mqtt_client.connected() ? "yes" : "no") + "</p>";
+  page += "<form method='post' action='/control-owner'><label>Config owner</label>";
+  page += "<select name='owner'><option value='local' " + String(g_system_config.config_owner == kConfigOwnerLocal ? "selected" : "") +
+          ">local</option><option value='external' " +
+          String(g_system_config.config_owner == kConfigOwnerExternal ? "selected" : "") + ">external</option></select>";
+  page += "<button type='submit'>Apply without reboot</button></form></section></main></body></html>";
+  return page;
+}
+
+void sendLocalRuntimeState() {
+  DynamicJsonDocument doc(512);
+  doc["device_id"] = g_system_config.device_id;
+  doc["config_owner"] = g_system_config.config_owner;
+  doc["local_config_writable"] = localConfigWritable();
+  doc["external_config_active"] = externalConfigOwnerActive();
+  doc["mqtt_configured"] = mqttConfigured(g_system_config);
+  doc["mqtt_connected"] = g_mqtt_client.connected();
+  doc["mode"] = g_fermentation_config.valid ? g_fermentation_config.mode : "thermostat";
+  doc["active_config_version"] = g_fermentation_config.version;
+  String payload;
+  serializeJson(doc, payload);
+  g_local_server.send(200, "application/json", payload);
+}
+
+void stopLocalControlServer() {
+  if (!g_local_server_started) {
+    return;
+  }
+  g_local_server.stop();
+  g_local_server.close();
+  g_local_server_started = false;
+}
+
+bool applyConfigOwnerChange(const String &requested_owner, const char *source, String &error) {
+  if (!isValidConfigOwner(requested_owner)) {
+    error = "owner must be local or external";
+    return false;
+  }
+  if (requested_owner == g_system_config.config_owner) {
+    return true;
+  }
+
+  SystemConfig previous = g_system_config;
+  SystemConfig updated = g_system_config;
+  updated.config_owner = requested_owner;
+  if (!validateSystemConfig(updated, error)) {
+    return false;
+  }
+  if (isExternalConfigOwner(updated.config_owner) && WiFi.status() != WL_CONNECTED) {
+    error = "Wi-Fi must be connected before switching to external";
+    return false;
+  }
+
+  if (g_mqtt_client.connected()) {
+    publishAvailability("offline");
+    g_mqtt_client.disconnect();
+  }
+
+  g_system_config = updated;
+  if (isExternalConfigOwner(g_system_config.config_owner)) {
+    g_last_mqtt_attempt_ms = 0;
+    if (!connectMqtt()) {
+      g_system_config = previous;
+      if (isExternalConfigOwner(previous.config_owner) && mqttRuntimeEnabled()) {
+        g_last_mqtt_attempt_ms = 0;
+        connectMqtt();
+      }
+      error = "MQTT unavailable; stayed in " + previous.config_owner;
+      return false;
+    }
+  }
+
+  if (!g_store.saveSystemConfig(g_system_config)) {
+    if (g_mqtt_client.connected()) {
+      publishAvailability("offline");
+      g_mqtt_client.disconnect();
+    }
+    g_system_config = previous;
+    if (isExternalConfigOwner(previous.config_owner) && mqttRuntimeEnabled()) {
+      g_last_mqtt_attempt_ms = 0;
+      connectMqtt();
+    }
+    error = "failed to persist system_config";
+    return false;
+  }
+
+  g_state_dirty = true;
+  Serial.printf("Config owner switched via %s to %s\n", source, g_system_config.config_owner.c_str());
+  publishStateIfConnected();
+  return true;
+}
+
+void handleLocalControlRoot() {
+  g_local_server.send(200, "text/html", localControlPage(""));
+}
+
+void handleLocalControlOwnerForm() {
+  String error;
+  if (!applyConfigOwnerChange(g_local_server.arg("owner"), "local_http_form", error)) {
+    g_local_server.send(409, "text/html", localControlPage(error));
+    return;
+  }
+  g_local_server.send(200, "text/html", localControlPage("Config owner updated without reboot."));
+}
+
+void handleLocalControlOwnerApi() {
+  DynamicJsonDocument doc(256);
+  if (deserializeJson(doc, g_local_server.arg("plain"))) {
+    g_local_server.send(400, "application/json", "{\"result\":\"error\",\"message\":\"invalid JSON\"}");
+    return;
+  }
+
+  String error;
+  const String owner = String(doc["owner"] | "");
+  if (!applyConfigOwnerChange(owner, "local_http_api", error)) {
+    g_local_server.send(409, "application/json",
+                        "{\"result\":\"error\",\"message\":\"" + error + "\",\"config_owner\":\"" +
+                            g_system_config.config_owner + "\"}");
+    return;
+  }
+
+  g_local_server.send(200, "application/json",
+                      "{\"result\":\"ok\",\"config_owner\":\"" + g_system_config.config_owner + "\"}");
+}
+
+void beginLocalControlServer() {
+  if (g_local_server_started) {
+    return;
+  }
+  g_local_server.on("/", HTTP_GET, handleLocalControlRoot);
+  g_local_server.on("/control-owner", HTTP_POST, handleLocalControlOwnerForm);
+  g_local_server.on("/api/runtime/state", HTTP_GET, sendLocalRuntimeState);
+  g_local_server.on("/api/control-owner", HTTP_POST, handleLocalControlOwnerApi);
+  g_local_server.onNotFound([]() { g_local_server.send(404, "text/plain", "Not found"); });
+  g_local_server.begin();
+  g_local_server_started = true;
+}
+
 bool shutOffForMutualExclusion(OutputDriver &output, const char *label) {
   const DriverStatus status = output.status();
   if (status.known && !status.on) {
@@ -162,6 +345,11 @@ void startProvisioningMode(const String &reason, bool reset_wifi) {
     return;
   }
   g_provisioning_mode = true;
+  stopLocalControlServer();
+  if (g_mqtt_client.connected()) {
+    publishAvailability("offline");
+    g_mqtt_client.disconnect();
+  }
   if (reset_wifi) {
     WiFi.disconnect(true, false);
     delay(100);
@@ -262,6 +450,8 @@ void publishTelemetry() {
   doc["device_id"] = g_system_config.device_id;
   doc["ts"] = currentUnixTime();
   doc["uptime_s"] = millis() / 1000UL;
+  doc["config_owner"] = g_system_config.config_owner;
+  doc["local_config_writable"] = localConfigWritable();
   if (snapshot.beer.valid) {
     doc["temp_primary_c"] = snapshot.beer.adjusted_c;
   }
@@ -313,6 +503,9 @@ void publishState() {
   DynamicJsonDocument doc(1536);
   doc["device_id"] = g_system_config.device_id;
   doc["ui"] = "headless";
+  doc["config_owner"] = g_system_config.config_owner;
+  doc["local_config_writable"] = localConfigWritable();
+  doc["external_config_active"] = externalConfigOwnerActive();
   doc["mode"] = g_fermentation_config.valid ? g_fermentation_config.mode : "thermostat";
   if (g_fermentation_config.valid) {
     doc["setpoint_c"] = publishedSetpointC();
@@ -369,6 +562,10 @@ void publishState() {
 }
 
 void handleFermentationConfigMessage(const String &payload) {
+  if (!externalConfigOwnerActive()) {
+    Serial.println("Ignoring config/desired because config_owner=local");
+    return;
+  }
   FermentationConfig candidate;
   String error;
   if (!parseFermentationConfigJson(payload, candidate, error) ||
@@ -454,6 +651,10 @@ void applyOutputCommand(const String &target, const String &state) {
 }
 
 void handleCommandMessage(const String &payload) {
+  if (!externalConfigOwnerActive()) {
+    Serial.println("Ignoring command because config_owner=local");
+    return;
+  }
   DynamicJsonDocument doc(512);
   if (deserializeJson(doc, payload)) {
     Serial.printf("Ignoring invalid command payload=%s\n", payload.c_str());
@@ -507,10 +708,18 @@ void processPendingCommands() {
 }
 
 void handleSystemPatchMessage(const String &payload) {
+  if (!externalConfigOwnerActive()) {
+    Serial.println("Ignoring system_config because config_owner=local");
+    return;
+  }
   SystemConfig updated;
   String error;
   if (!parseSystemConfigPatchJson(payload, g_system_config, updated, error)) {
     Serial.printf("Ignoring invalid system_config patch: %s payload=%s\n", error.c_str(), payload.c_str());
+    return;
+  }
+  if (updated.config_owner != g_system_config.config_owner) {
+    Serial.println("Ignoring system_config patch that attempts to change config_owner");
     return;
   }
   if (!systemConfigChanged(g_system_config, updated)) {
@@ -540,6 +749,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 }
 
 bool connectMqtt() {
+  if (!mqttRuntimeEnabled()) {
+    return false;
+  }
   if (WiFi.status() != WL_CONNECTED) {
     return false;
   }
@@ -592,6 +804,13 @@ void maintainConnectivity() {
   }
 
   if (g_provisioning_mode || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  if (!mqttRuntimeEnabled()) {
+    if (g_mqtt_client.connected()) {
+      publishAvailability("offline");
+      g_mqtt_client.disconnect();
+    }
     return;
   }
   if (g_mqtt_client.connected()) {
@@ -668,6 +887,7 @@ void setup() {
     return;
   }
   ensureOutputs();
+  beginLocalControlServer();
 }
 
 void loop() {
@@ -680,6 +900,10 @@ void loop() {
       delay(500);
       ESP.restart();
     }
+  }
+
+  if (g_local_server_started) {
+    g_local_server.handleClient();
   }
 
   processPendingCommands();
