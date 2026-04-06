@@ -73,3 +73,11 @@ pio run
 pio run -t upload --upload-port COM4
 pio device monitor --port COM4 --baud 115200
 ```
+
+Host-side controller tests:
+
+- the repo now includes a native unit-test target for controller fault handling,
+  control-sensor selection, delay behavior, and output handover safety
+- run `pio test -e native-tests` from `firmware_v2`
+- the native target requires a host C/C++ compiler such as `gcc/g++` to be
+  available on `PATH`
